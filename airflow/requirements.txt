@@ -1,0 +1,10 @@
+# Airflow + Feast — most constrained environment, kept isolated from other services.
+# Both require SQLAlchemy<2, which makes them compatible with each other but not
+# with PyTorch/scikit-learn — this is why Airflow gets its own venv.
+# Note: installation is slow (~5–10 min) due to Airflow's large dependency graph.
+
+apache-airflow==2.7.3
+apache-airflow-providers-postgres==5.7.1
+apache-airflow-providers-common-sql==1.8.1
+feast==0.34.1
+psycopg2-binary==2.9.9

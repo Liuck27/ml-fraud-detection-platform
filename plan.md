@@ -8,53 +8,45 @@ An end-to-end machine learning platform for detecting fraudulent financial trans
 
 ### System Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          Docker Compose Network                             │
-│                                                                             │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────────────┐        │
-│  │   Airflow     │────▶│  PostgreSQL   │◀────│    MLflow Server     │        │
-│  │ (DAGs: ingest,│     │ (metadata +   │     │ (experiment tracking │        │
-│  │  feature eng, │     │  feature      │     │  model registry)     │        │
-│  │  retrain)     │     │  store)       │     └──────────┬───────────┘        │
-│  └──────┬───────┘     └──────────────┘                 │                    │
-│         │                                               │                    │
-│         ▼                                               ▼                    │
-│  ┌──────────────┐                              ┌──────────────────┐         │
-│  │ Feast Feature │                              │  FastAPI Serving  │         │
-│  │    Store      │─────────────────────────────▶│  (inference API,  │         │
-│  │ (offline +    │   feature retrieval          │   A/B testing)    │         │
-│  │  online)      │                              └────────┬─────────┘         │
-│  └──────────────┘                                        │                   │
-│                                                          │                   │
-│  ┌──────────────┐     ┌──────────────┐                   │                   │
-│  │Kafka Producer │────▶│    Kafka      │                   │                   │
-│  │  (Python,     │     │  (Broker +    │                   │                   │
-│  │  simulates    │     │  Zookeeper)   │                   │                   │
-│  │  transactions)│     └──────┬───────┘                   │                   │
-│  └──────────────┘            │                            │                   │
-│                              ▼                            │                   │
-│                       ┌──────────────┐                    │                   │
-│                       │ Go Consumer   │───────────────────┘                   │
-│                       │ (reads txns,  │   HTTP POST /predict                  │
-│                       │  calls API,   │                                       │
-│                       │  writes       │──────┐                                │
-│                       │  results)     │      │                                │
-│                       └──────────────┘      ▼                                │
-│                                       ┌──────────────┐                       │
-│  ┌──────────────┐                     │  Kafka        │                       │
-│  │  Evidently    │◀────metrics────────│  (results     │                       │
-│  │ (drift        │                    │   topic)      │                       │
-│  │  detection)   │                    └──────────────┘                       │
-│  └──────┬───────┘                                                           │
-│         │                                                                    │
-│         ▼                                                                    │
-│  ┌──────────────┐     ┌──────────────┐                                      │
-│  │  Prometheus   │────▶│   Grafana     │                                      │
-│  │ (metrics      │     │ (dashboards)  │                                      │
-│  │  collection)  │     └──────────────┘                                      │
-│  └──────────────┘                                                           │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph compose["Docker Compose Network"]
+        PG[(PostgreSQL\nmetadata + feature store)]
+
+        AW["Airflow\nDAGs: ingest · feature eng · retrain"]
+        ML["MLflow Server\nexperiment tracking · model registry"]
+        FEAST["Feast Feature Store\noffline + online"]
+        API["FastAPI Serving\ninference API · A/B testing"]
+
+        PROD["Kafka Producer\nPython · simulates transactions"]
+        KAFKA["Kafka\nBroker + Zookeeper"]
+        GO["Go Consumer\nreads txns · calls API · writes results"]
+        RESULTS["Kafka\nresults topic"]
+
+        EV["Evidently\ndrift detection"]
+        PROM["Prometheus\nmetrics collection"]
+        GRAF["Grafana\ndashboards"]
+    end
+
+    AW <-->|metadata| PG
+    ML <-->|metadata| PG
+    FEAST <-->|offline + online store| PG
+
+    AW -->|triggers materialization| FEAST
+    AW -->|log experiments| ML
+    ML -->|model loading| API
+    FEAST -->|feature retrieval| API
+    API -->|metrics| PROM
+    API -->|prediction results| RESULTS
+
+    PROD --> KAFKA
+    KAFKA --> GO
+    GO -->|"HTTP POST /predict"| API
+    GO --> RESULTS
+
+    API -->|serving data| EV
+    EV -->|drift metrics| PROM
+    PROM --> GRAF
 ```
 
 ### Services & Communication
@@ -477,6 +469,10 @@ monitoring/
 
 ```
 ml-fraud-detection-platform/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml               # Main CI: lint + test + docker build
+│       └── security.yml         # Dependency vulnerability scan
 ├── docker-compose.yml
 ├── .env                         # Environment variables
 ├── .env.example                 # Template
@@ -765,7 +761,86 @@ ml-fraud-detection-platform/
 
 ---
 
-### Phase 10: Integration Testing & Documentation
+### Phase 10: GitHub Actions CI
+
+**Duration:** ~0.5 days
+
+**Deliverables:**
+- `.github/workflows/ci.yml` — runs on every push and PR to `main`/`dev`:
+  - **Python lint:** `ruff check .` + `black --check .`
+  - **Python unit tests:** `pytest serving/tests/ airflow/tests/ training/tests/ -v`
+  - **Go checks:** `go vet ./...` + `go test ./... -v` in `streaming/consumer/`
+  - **Docker build validation:** `docker build` for all custom Dockerfiles (serving, airflow, producer, consumer)
+- `.github/workflows/security.yml` — weekly cron + on push:
+  - `pip-audit` for Python dependency vulnerabilities
+  - `govulncheck` for Go dependency vulnerabilities
+
+**Workflow structure (`ci.yml`):**
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install ruff black
+      - run: ruff check .
+      - run: black --check .
+
+  python-tests:
+    runs-on: ubuntu-latest
+    needs: python-lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r serving/requirements.txt pytest
+      - run: pytest serving/tests/ airflow/tests/ training/tests/ -v
+
+  go-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.21" }
+      - working-directory: streaming/consumer
+        run: |
+          go vet ./...
+          go test ./... -v
+
+  docker-builds:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        context:
+          - { path: airflow, dockerfile: airflow/Dockerfile }
+          - { path: serving, dockerfile: serving/Dockerfile }
+          - { path: streaming/producer, dockerfile: streaming/producer/Dockerfile }
+          - { path: streaming/consumer, dockerfile: streaming/consumer/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker build -f ${{ matrix.context.dockerfile }} ${{ matrix.context.path }}
+```
+
+**Acceptance Criteria:**
+- All four jobs pass on a clean push to `dev`
+- PRs to `main` are blocked if any job fails
+- CI badge added to `README.md`
+- `security.yml` runs weekly and reports vulnerabilities (non-blocking on PRs)
+
+---
+
+### Phase 11: Integration Testing & Documentation
 **Duration:** ~1 day
 
 **Deliverables:**
@@ -1024,7 +1099,12 @@ ml-fraud-detection-platform/
 - **Phase 7:** Send 1000 requests → verify ~80/20 split in Prometheus metrics
 - **Phase 8:** Run producer + consumer → verify messages flow end-to-end
 - **Phase 9:** Check Grafana dashboards populate with real metrics
-- **Phase 10:** Full `docker-compose up` → end-to-end smoke test
+- **Phase 10:** Push to `dev` → all CI jobs pass (lint, tests, Go, Docker builds)
+- **Phase 11:** Full `docker-compose up` → end-to-end smoke test
+
+### CI Enforcement (GitHub Actions)
+
+All unit tests, linting, and Docker builds run automatically on every push and PR via `.github/workflows/ci.yml`. PRs to `main` require all jobs to pass. See **Phase 10** for workflow details.
 
 ### Test Commands
 ```bash
@@ -1041,7 +1121,12 @@ pytest tests/integration/ -v
 
 # Linting
 ruff check .
+black --check .
 go vet ./...
+
+# Security scan (local)
+pip-audit
+govulncheck ./...
 ```
 
 ---
@@ -1050,6 +1135,8 @@ go vet ./...
 
 ```markdown
 # ML Fraud Detection Platform
+
+![CI](https://github.com/<your-username>/ml-fraud-detection-platform/actions/workflows/ci.yml/badge.svg)
 
 > End-to-end machine learning platform for real-time financial fraud detection
 > with MLOps best practices, streaming pipelines, and production monitoring.
@@ -1132,3 +1219,5 @@ The following bullet points can be added to a CV/resume after completing this pr
 7. **"Established MLOps practices including experiment tracking, model registry with staging/production lifecycle, automated retraining triggers on drift detection, and TorchScript model export for optimized inference"**
 
 8. **"Containerized 12+ microservices via Docker Compose with health checks, volume persistence, and single-command deployment for a complete ML platform stack"**
+
+9. **"Configured GitHub Actions CI pipeline enforcing Python linting (ruff/black), pytest unit tests, Go build/vet/test, and Docker build validation on every PR — blocking merges on failure"**

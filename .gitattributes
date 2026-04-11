@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Force LF on files that must not have CRLF (shell-executed on Linux in Docker/CI)
+Makefile    text eol=lf
+*.sh        text eol=lf
+*.sql       text eol=lf
+Dockerfile  text eol=lf
