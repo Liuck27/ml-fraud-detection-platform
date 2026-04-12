@@ -4,66 +4,57 @@
 
 ### What It Does
 
-An end-to-end machine learning platform for detecting fraudulent financial transactions. The system ingests transaction data, engineers features, trains multiple ML models (classical + deep learning), serves predictions via real-time and batch APIs, streams transactions through Kafka, and monitors model performance with drift detection — all orchestrated locally via Docker Compose.
+A fraud detection platform that handles the full ML lifecycle: data ingestion, feature engineering, model training with experiment tracking, real-time inference via REST API, and monitoring with drift detection. Built to demonstrate practical MLOps skills on a real-world imbalanced classification problem.
 
-### System Architecture
+### Why This Problem
+
+Fraud detection is one of the most practical ML applications in industry. It highlights skills that matter in real roles:
+- **Imbalanced data handling** — fraud is <1% of transactions. Naive models get 99% accuracy by predicting "not fraud" every time.
+- **Cost-sensitive decisions** — a missed fraud (false negative) costs real money; a false alarm (false positive) frustrates customers. The right threshold depends on business context.
+- **End-to-end thinking** — training a model is not enough. It needs to be served, monitored, and retrained when patterns shift.
+
+### Architecture
 
 ```mermaid
 flowchart TD
     subgraph compose["Docker Compose Network"]
-        PG[(PostgreSQL\nmetadata + feature store)]
+        PG[(PostgreSQL\nmetadata store)]
 
-        AW["Airflow\nDAGs: ingest · feature eng · retrain"]
-        ML["MLflow Server\nexperiment tracking · model registry"]
-        FEAST["Feast Feature Store\noffline + online"]
-        API["FastAPI Serving\ninference API · A/B testing"]
+        AW["Airflow\nDAGs: ingest · features · retrain"]
+        ML["MLflow\nexperiment tracking · model registry"]
+        API["FastAPI\ninference · A/B testing · SHAP explanations"]
 
-        PROD["Kafka Producer\nPython · simulates transactions"]
-        KAFKA["Kafka\nBroker + Zookeeper"]
-        GO["Go Consumer\nreads txns · calls API · writes results"]
-        RESULTS["Kafka\nresults topic"]
-
-        EV["Evidently\ndrift detection"]
         PROM["Prometheus\nmetrics collection"]
         GRAF["Grafana\ndashboards"]
     end
 
+    CSV["data/raw/creditcard.csv"]
+    PARQUET["data/processed/features.parquet"]
+    DRIFT["scripts/drift_report.py\n(run manually)"]
+
+    CSV --> AW
+    AW --> PARQUET
     AW <-->|metadata| PG
     ML <-->|metadata| PG
-    FEAST <-->|offline + online store| PG
 
-    AW -->|triggers materialization| FEAST
-    AW -->|log experiments| ML
+    PARQUET -->|training data| ML
     ML -->|model loading| API
-    FEAST -->|feature retrieval| API
     API -->|metrics| PROM
-    API -->|prediction results| RESULTS
-
-    PROD --> KAFKA
-    KAFKA --> GO
-    GO -->|"HTTP POST /predict"| API
-    GO --> RESULTS
-
-    API -->|serving data| EV
-    EV -->|drift metrics| PROM
     PROM --> GRAF
+
+    API -.->|serving data| DRIFT
 ```
 
-### Services & Communication
+### Services
 
-| Service | Role | Communicates With |
-|---------|------|-------------------|
-| **PostgreSQL** | Metadata store (Airflow, MLflow), Feast offline/online store | Airflow, MLflow, Feast, FastAPI |
-| **Airflow** (webserver + scheduler + worker) | Orchestrates data ingestion, feature engineering, retraining | PostgreSQL, Feast, MLflow |
-| **MLflow Server** | Experiment tracking, model registry, artifact store | PostgreSQL, FastAPI (model loading) |
-| **Feast** | Feature store (offline for training, online for serving) | PostgreSQL, Airflow, FastAPI |
-| **FastAPI** | Model serving (real-time + batch), A/B testing | MLflow, Feast, Prometheus, Kafka (results) |
-| **Kafka + Zookeeper** | Message broker for streaming transactions | Producer, Go Consumer |
-| **Kafka Producer** (Python) | Simulates real-time transaction stream | Kafka |
-| **Go Consumer** | Consumes transactions, calls FastAPI, writes results | Kafka, FastAPI |
-| **Prometheus** | Metrics collection and storage | FastAPI, Evidently, Grafana |
-| **Grafana** | Dashboards and alerting | Prometheus |
-| **Evidently** | Data/prediction drift detection | FastAPI (via scheduled reports), Prometheus |
+| Service | Role | Port | Talks To |
+|---------|------|------|----------|
+| **PostgreSQL** | Metadata store for Airflow + MLflow | 5432 | Airflow, MLflow |
+| **Airflow** (webserver + scheduler) | Orchestrates ingestion, feature engineering, retraining | 8080 | PostgreSQL, MLflow |
+| **MLflow** | Experiment tracking, model registry | 5000 | PostgreSQL, FastAPI |
+| **FastAPI** | Inference API, A/B testing, SHAP explanations | 8000 | MLflow, Prometheus |
+| **Prometheus** | Scrapes metrics from FastAPI | 9090 | FastAPI, Grafana |
+| **Grafana** | Dashboards for request rate, latency, fraud rate | 3000 | Prometheus |
 
 ---
 
@@ -71,54 +62,41 @@ flowchart TD
 
 ### Core Infrastructure
 
-| Tool | Version | Purpose | Skills Demonstrated |
-|------|---------|---------|---------------------|
-| Docker + Docker Compose | Latest | Container orchestration | Production deployment |
-| PostgreSQL | 15 | Metadata + feature store backend | Database management |
+| Tool | Purpose |
+|------|---------|
+| Docker + Docker Compose | Run all services locally with one command |
+| PostgreSQL 15 | Shared metadata backend for Airflow and MLflow |
+| Makefile | Common commands (lint, test, train, up/down) |
 
-### ML & Data Science
+### ML & Data
 
-| Tool | Version | Purpose | Skills Demonstrated |
-|------|---------|---------|---------------------|
-| Python | 3.11 | Primary language | — |
-| scikit-learn | 1.3.x | Classical ML (preprocessing, metrics) | Classical ML |
-| XGBoost | 2.0.x | Gradient boosted classifier | Classification |
-| PyTorch | 2.1.x | Autoencoder for anomaly detection | Deep learning |
-| pandas | 2.1.x | Data manipulation | Feature engineering |
-| numpy | 1.26.x | Numerical computing | — |
+| Tool | Purpose |
+|------|---------|
+| Python 3.11 | Primary language |
+| pandas | Data loading and feature engineering |
+| scikit-learn | Preprocessing, metrics, baselines |
+| XGBoost | Main classifier (gradient boosting) |
+| PyTorch | Autoencoder for anomaly detection |
+| SHAP | Model explainability — why did it flag this transaction? |
+| imbalanced-learn | SMOTE oversampling for class imbalance |
 
-### MLOps
+### MLOps & Serving
 
-| Tool | Version | Purpose | Skills Demonstrated |
-|------|---------|---------|---------------------|
-| MLflow | 2.9.x | Experiment tracking + model registry | MLOps, model versioning |
-| Apache Airflow | 2.7.x | Pipeline orchestration | Pipeline orchestration |
-| Feast | 0.34.x | Feature store | Feature stores |
+| Tool | Purpose |
+|------|---------|
+| MLflow | Experiment tracking + model registry with champion/challenger |
+| Apache Airflow | Pipeline orchestration (ingest → features → retrain) |
+| FastAPI + Uvicorn | REST API for inference |
+| Pydantic | Request/response validation |
 
-### Streaming
+### Monitoring
 
-| Tool | Version | Purpose | Skills Demonstrated |
-|------|---------|---------|---------------------|
-| Apache Kafka | 3.6.x (Confluent image) | Message streaming | Streaming pipelines |
-| Go | 1.21 | Kafka consumer | Go proficiency |
-| confluent-kafka-go | v2.3.x | Go Kafka client | — |
-
-### Serving & API
-
-| Tool | Version | Purpose | Skills Demonstrated |
-|------|---------|---------|---------------------|
-| FastAPI | 0.104.x | Model serving API | Real-time inference |
-| Uvicorn | 0.24.x | ASGI server | — |
-| Pydantic | 2.5.x | Request/response validation | API design |
-
-### Monitoring & Observability
-
-| Tool | Version | Purpose | Skills Demonstrated |
-|------|---------|---------|---------------------|
-| Prometheus | 2.48.x | Metrics collection | Production monitoring |
-| Grafana | 10.2.x | Dashboards | Observability |
-| Evidently | 0.4.x | Drift detection | Drift monitoring |
-| prometheus-fastapi-instrumentator | 6.1.x | Auto-instrument FastAPI | — |
+| Tool | Purpose |
+|------|---------|
+| Prometheus | Metrics collection |
+| Grafana | Dashboards (request rate, p99 latency, fraud rate, A/B split) |
+| Evidently | Data drift detection (standalone script, generates HTML report) |
+| prometheus-fastapi-instrumentator | Auto-instruments FastAPI with Prometheus metrics |
 
 ---
 
@@ -126,72 +104,49 @@ flowchart TD
 
 ### Dataset
 
-**Kaggle Credit Card Fraud Detection Dataset**
-- Source: https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud
-- 284,807 transactions, 492 frauds (0.172% — highly imbalanced)
+**Kaggle Credit Card Fraud Detection**
+- 284,807 transactions, 492 frauds (0.172%)
 - 30 features: `Time`, `Amount`, and 28 PCA-transformed features (`V1`–`V28`)
-- Target: `Class` (0 = legitimate, 1 = fraud)
-- License: Open Database License (ODbL)
+- Target: `Class` (0 = legit, 1 = fraud)
+- Download to `data/raw/creditcard.csv` (gitignored)
 
-We will download this CSV and place it in `data/raw/creditcard.csv`.
-
-### Data Schema
+### Engineered Features
 
 ```python
-# Raw transaction schema
+# Added by the feature pipeline on top of raw V1–V28 + Amount
 {
-    "transaction_id": str,       # Generated UUID
-    "Time": float,               # Seconds elapsed from first transaction
-    "V1": float,                 # PCA component 1
-    # ... V2–V28
-    "V28": float,                # PCA component 28
-    "Amount": float,             # Transaction amount
-    "Class": int                 # 0=legit, 1=fraud (label)
-}
-
-# Engineered features (added by feature pipeline)
-{
-    "amount_log": float,               # log1p(Amount)
-    "amount_zscore": float,            # Z-score normalized Amount
-    "hour_of_day": int,                # Derived from Time
-    "is_night": bool,                  # 22:00–06:00
-    "v1_v2_interaction": float,        # V1 * V2
-    "amount_rolling_mean_1h": float,   # Rolling mean of amount (1h window)
-    "amount_rolling_std_1h": float,    # Rolling std of amount (1h window)
-    "transaction_count_1h": int,       # Transaction frequency (1h window)
+    "amount_log": float,             # log1p(Amount) — reduces skew
+    "amount_zscore": float,          # Z-score normalized Amount
+    "hour_of_day": int,              # Derived from Time field
+    "is_night": bool,                # 22:00–06:00 flag
+    "v1_v2_interaction": float,      # V1 * V2 interaction term
 }
 ```
 
-### Synthetic Data Generation for Streaming
+These are straightforward transforms. No rolling windows or aggregations — the dataset has no user/card grouping to roll over, so those would be synthetic and misleading.
 
-The Kafka producer will:
-1. Load the original dataset
-2. Add slight random noise to numerical features (±5% jitter)
-3. Assign realistic timestamps (current time with random sub-second offsets)
-4. Emit transactions at a configurable rate (default: 10 transactions/second)
-5. Optionally inject anomalies by sampling from the fraud class with higher probability
+### Class Imbalance Strategy
 
-This approach ensures the streaming data is statistically similar to training data while providing continuous flow for the Kafka pipeline.
+The dataset is 99.83% legitimate / 0.17% fraud. We handle this at multiple levels:
+
+1. **Training**: SMOTE oversampling + `scale_pos_weight` in XGBoost
+2. **Evaluation**: Never report accuracy alone. Use precision, recall, F1, AUC-ROC, and PR-AUC (precision-recall AUC is more informative than ROC-AUC on imbalanced data)
+3. **Threshold tuning**: Optimize the decision threshold on the precision-recall curve based on a cost ratio (missed fraud costs more than a false alarm)
+4. **Anomaly detection**: The autoencoder learns "normal" transactions only — fraud shows up as high reconstruction error, naturally handling the imbalance
 
 ---
 
 ## 4. Component Breakdown
 
-### a) Data Ingestion & Feature Engineering Pipeline (Airflow)
+### a) Data Ingestion & Feature Engineering (Airflow)
 
-**Purpose:** Orchestrate data loading, validation, feature engineering, and materialization into the Feast feature store.
+**Purpose:** Orchestrate data loading, validation, and feature computation.
 
-**Input:** Raw CSV in `data/raw/creditcard.csv`
-**Output:** Engineered features materialized in Feast (offline + online stores)
+**Why Airflow for this?** The retraining DAG chains together data validation → feature engineering → model training → model registration. That multi-step dependency with failure handling is Airflow's sweet spot. A single script could do it, but wouldn't give you retry logic, scheduling, or a UI to inspect failed runs.
 
-**Key Implementation Details:**
-- `data_ingestion_dag.py`: Main DAG with tasks:
-  1. `validate_raw_data` — Check file exists, schema validation, null checks
-  2. `engineer_features` — Compute derived features (log transforms, rolling aggregations, time features)
-  3. `write_to_offline_store` — Write feature DataFrame to Feast offline store (Parquet files)
-  4. `materialize_online_store` — Run `feast materialize` to push to online store
-- `feature_engineering.py`: Pure functions for feature computation (testable independently)
-- Uses SMOTE or class weighting strategies for imbalance (handled in training, noted in features)
+**DAGs:**
+- `data_ingestion_dag.py`: validate CSV → compute features → write `data/processed/features.parquet`
+- `retrain_dag.py`: trigger training scripts → evaluate → register new model in MLflow (if it beats champion)
 
 **Files:**
 ```
@@ -200,268 +155,133 @@ airflow/
 │   ├── data_ingestion_dag.py
 │   └── retrain_dag.py
 ├── plugins/
-│   └── feature_engineering.py
+│   └── feature_engineering.py    # Pure functions, testable independently
+├── requirements.txt
 └── Dockerfile
 ```
 
-### b) Model Training & Experiment Tracking (MLflow + PyTorch + scikit-learn)
+### b) Model Training & Experiment Tracking (MLflow)
 
-**Purpose:** Train, evaluate, and register multiple fraud detection models.
+**Two models, different approaches:**
 
-**Models:**
+1. **XGBoost Classifier** — supervised, gradient boosted trees
+   - Trained on all labeled data with SMOTE + `scale_pos_weight`
+   - Hyperparameters: learning rate, max depth, n_estimators
+   - This is the **champion** (primary model)
 
-1. **XGBoost Classifier** (Classical ML)
-   - Binary classification on engineered features
-   - Handle class imbalance via `scale_pos_weight`
-   - Hyperparameter tuning: learning rate, max depth, n_estimators
-   - Metrics: precision, recall, F1, AUC-ROC, PR-AUC
-
-2. **PyTorch Autoencoder** (Deep Learning — Anomaly Detection)
+2. **PyTorch Autoencoder** — unsupervised anomaly detection
    - Trained on legitimate transactions only
-   - Reconstruction error as anomaly score
+   - Fraud = high reconstruction error (MSE above threshold)
    - Architecture: Input(30) → 64 → 32 → 16 → 32 → 64 → Output(30)
-   - Threshold on reconstruction MSE for fraud classification
-   - Export via TorchScript for serving
+   - This is the **challenger** (compared via A/B testing)
 
-3. **Isolation Forest** (Unsupervised — Anomaly Clustering)
-   - Complementary anomaly detection
-   - Used for grouping/clustering anomalous transactions
-   - Provides anomaly scores for ensemble potential
+**Why both?** XGBoost is the reliable workhorse for tabular data. The autoencoder shows a different angle — unsupervised anomaly detection that doesn't need fraud labels, which matters when labeled fraud data is scarce. Comparing them via A/B testing demonstrates how teams evaluate model alternatives in practice.
 
-**MLflow Integration:**
-- All runs logged with hyperparameters, metrics, and model artifacts
+**MLflow integration:**
+- All runs log hyperparameters, metrics, and model artifacts
 - Model registry with aliases: `champion` (production), `challenger` (staging)
-- Comparison views across experiments
+- Autoencoder exported via TorchScript for serving
+
+**Evaluation metrics (for both models):**
+- Precision, Recall, F1-score
+- AUC-ROC and PR-AUC
+- Confusion matrix
+- Cost-weighted score (configurable cost ratio for FP vs FN)
 
 **Files:**
 ```
 training/
 ├── train_xgboost.py
 ├── train_autoencoder.py
-├── train_isolation_forest.py
-├── evaluate.py              # Shared evaluation utilities
-├── model_registry.py        # MLflow registry helpers (promote/demote)
+├── evaluate.py                  # Shared: compute_metrics(), plot_curves(), find_threshold()
+├── model_registry.py            # MLflow helpers: promote/demote aliases
 ├── requirements.txt
 └── notebooks/
-    └── eda.ipynb            # Exploratory data analysis
+    └── eda.ipynb                # EDA: class balance, distributions, correlations
 ```
 
-### c) Feature Store (Feast)
-
-**Purpose:** Centralized feature management for both training and real-time serving.
-
-**Configuration:**
-- **Offline store:** File-based (Parquet) — simple, no extra infra needed
-- **Online store:** SQLite (local) — sufficient for portfolio project
-- **Registry:** File-based
-
-**Entity:** `transaction` identified by `transaction_id`
-
-**Feature Views:**
-- `transaction_features`: Core engineered features
-- `transaction_stats`: Rolling aggregation features
-
-**Files:**
-```
-feature_store/
-├── feature_repo/
-│   ├── feature_store.yaml    # Feast project config
-│   ├── entities.py           # Entity definitions
-│   ├── features.py           # Feature view definitions
-│   └── data_sources.py       # Data source definitions
-└── README.md
-```
-
-### d) Kafka Streaming Pipeline
-
-**Purpose:** Simulate real-time transaction processing end-to-end.
-
-**Topics:**
-- `transactions` — Raw transaction events (JSON)
-- `predictions` — Inference results (JSON)
-
-**Message Schema (transactions topic):**
-```json
-{
-    "transaction_id": "uuid-string",
-    "timestamp": "2024-01-15T10:30:00Z",
-    "features": {
-        "V1": -1.359,
-        "V2": -0.073,
-        "...": "...",
-        "V28": 0.015,
-        "Amount": 149.62
-    }
-}
-```
-
-**Message Schema (predictions topic):**
-```json
-{
-    "transaction_id": "uuid-string",
-    "timestamp": "2024-01-15T10:30:00.150Z",
-    "prediction": 1,
-    "fraud_probability": 0.87,
-    "model_version": "xgboost-v3",
-    "latency_ms": 12.5
-}
-```
-
-**Kafka Producer (Python):**
-- Reads from dataset, adds noise, publishes to `transactions` topic
-- Configurable throughput (TPS) and duration
-- Graceful shutdown on SIGTERM
-
-**Kafka Consumer (Go):**
-- Reads from `transactions` topic (consumer group: `fraud-detector`)
-- Calls FastAPI `/predict` endpoint via HTTP
-- Publishes result to `predictions` topic
-- Idiomatic Go: goroutines for concurrent processing, structured logging, graceful shutdown
-- Health check endpoint on `:8081/health`
-
-**Files:**
-```
-streaming/
-├── producer/
-│   ├── producer.py
-│   ├── requirements.txt
-│   └── Dockerfile
-└── consumer/
-    ├── main.go
-    ├── go.mod
-    ├── go.sum
-    ├── internal/
-    │   ├── consumer.go     # Kafka consumer logic
-    │   ├── client.go       # HTTP client for inference API
-    │   └── producer.go     # Kafka producer for results
-    └── Dockerfile
-```
-
-### e) Model Serving API (FastAPI)
-
-**Purpose:** Serve predictions via REST API with A/B testing between models.
+### c) Model Serving API (FastAPI)
 
 **Endpoints:**
-- `POST /predict` — Single transaction inference
-- `POST /predict/batch` — Batch inference (up to 1000 transactions)
-- `GET /health` — Health check with model status
-- `GET /models` — List loaded models and their versions
-- `GET /metrics` — Prometheus metrics endpoint
+- `POST /predict` — single transaction → fraud score + explanation
+- `POST /predict/batch` — up to 1000 transactions
+- `GET /health` — service status + loaded models
+- `GET /models` — model versions, roles, metrics
+- `GET /metrics` — Prometheus metrics (auto-instrumented)
 
-**A/B Testing Logic:**
-- Configuration: traffic split percentage (e.g., 80% XGBoost / 20% Autoencoder)
-- Consistent routing: hash of `transaction_id` determines model assignment
-- Both models' predictions are logged for offline comparison
-- Split configured via environment variable, changeable without restart
+**A/B Testing:**
+- Deterministic: `hash(transaction_id) % 100 < challenger_pct`
+- Same transaction always routes to the same model
+- Split ratio configurable via env var (default: 80% champion / 20% challenger)
 
-**Model Loading:**
-- On startup, load `champion` and `challenger` models from MLflow registry
-- XGBoost model loaded via MLflow's sklearn flavor
-- Autoencoder loaded via TorchScript
-- Fallback: if MLflow unavailable, load from local artifact cache
+**SHAP Explanations:**
+- The `/predict` response includes top contributing features (e.g., "V14 pushed score up by 0.3, Amount pushed it down by 0.1")
+- Uses SHAP TreeExplainer for XGBoost (fast, exact)
+- Explains *why* a transaction was flagged — important for compliance and trust
+
+**Model loading:**
+- On startup, load champion + challenger from MLflow registry
+- Fallback: if MLflow is unreachable, load from local artifact cache
 
 **Files:**
 ```
 serving/
 ├── app/
-│   ├── main.py              # FastAPI app, startup/shutdown
+│   ├── main.py                  # FastAPI app, startup/shutdown
+│   ├── config.py                # Settings via pydantic-settings
+│   ├── schemas.py               # Pydantic request/response models
 │   ├── routes/
-│   │   ├── predict.py       # Prediction endpoints
-│   │   ├── health.py        # Health check
-│   │   └── models.py        # Model info endpoint
-│   ├── models/
-│   │   ├── loader.py        # MLflow model loading
-│   │   └── ab_testing.py    # A/B routing logic
-│   ├── schemas.py           # Pydantic request/response models
-│   └── config.py            # Settings via pydantic-settings
+│   │   ├── predict.py           # Prediction endpoints
+│   │   ├── health.py            # Health check
+│   │   └── models.py            # Model info
+│   └── models/
+│       ├── loader.py            # MLflow model loading + cache
+│       ├── ab_testing.py        # A/B routing logic
+│       └── explainer.py         # SHAP explanations
 ├── requirements.txt
 ├── Dockerfile
 └── tests/
+    ├── conftest.py
     ├── test_predict.py
-    ├── test_ab_testing.py
-    └── conftest.py
+    └── test_ab_testing.py
 ```
 
-### f) Monitoring & Observability
+### d) Monitoring & Drift Detection
 
-**Purpose:** Track model performance, detect drift, and alert on degradation.
+**Prometheus metrics (exported by FastAPI):**
+- `inference_latency_seconds` (histogram) — per model
+- `inference_total` (counter) — per model, per prediction class
+- `inference_errors_total` (counter)
+- `ab_test_assignments_total` (counter) — per model variant
 
-**Components:**
+**Grafana dashboard (4 panels, provisioned via JSON):**
+- Request rate over time
+- Fraud rate %
+- p99 inference latency
+- A/B traffic split ratio
 
-1. **Prometheus Metrics (exported by FastAPI):**
-   - `inference_latency_seconds` (histogram) — per model
-   - `inference_total` (counter) — per model, per prediction class
-   - `inference_errors_total` (counter)
-   - `model_confidence_score` (histogram) — per model
-   - `ab_test_assignments_total` (counter) — per model variant
-   - Custom: `estimated_cost_per_inference` (gauge) — estimated compute cost
-
-2. **Evidently Drift Reports:**
-   - Scheduled via Airflow DAG (every N hours)
-   - Compares reference data (training set) vs. current serving data
-   - Generates HTML reports saved to `data/reports/`
-   - Exports drift metrics to Prometheus via pushgateway or file-based export
-
-3. **Grafana Dashboards (provisioned via JSON):**
-   - **Model Performance:** Accuracy, F1, precision, recall over time
-   - **Inference Metrics:** Latency p50/p95/p99, throughput, error rate
-   - **Drift Monitoring:** Feature drift scores, prediction drift
-   - **A/B Comparison:** Side-by-side model metrics
-   - **System Health:** Request volume, consumer lag, uptime
-
-4. **Automated Retraining Trigger:**
-   - Airflow DAG checks drift metrics from Prometheus
-   - If drift score exceeds threshold → trigger retrain DAG
-   - Simple implementation: cron-scheduled Airflow DAG
+**Drift detection (`scripts/drift_report.py`):**
+- Standalone script (~50 lines), run manually
+- Compares training data distribution vs. recent serving data
+- Uses Evidently `DataDriftPreset`, outputs HTML to `data/reports/`
+- Not integrated into Airflow — it's a diagnostic tool, not a production pipeline
 
 **Files:**
 ```
 monitoring/
-├── grafana/
-│   ├── provisioning/
-│   │   ├── dashboards/
-│   │   │   ├── dashboard.yml       # Dashboard provisioning config
-│   │   │   └── fraud_detection.json # Main dashboard
-│   │   └── datasources/
-│   │       └── datasource.yml      # Prometheus datasource
-│   └── Dockerfile
+├── grafana/provisioning/
+│   ├── dashboards/
+│   │   ├── dashboard.yml
+│   │   └── fraud_detection.json
+│   └── datasources/
+│       └── datasource.yml
 ├── prometheus/
-│   └── prometheus.yml              # Scrape configs
-├── evidently/
-│   ├── drift_report.py             # Generate drift reports
-│   └── requirements.txt
+│   └── prometheus.yml
 └── alerting/
-    └── rules.yml                   # Prometheus alerting rules
+    └── rules.yml               # 2-3 rules: high fraud rate, p99 > 500ms, error spike
+scripts/
+└── drift_report.py
 ```
-
-### g) Infrastructure (Docker Compose)
-
-**Services in `docker-compose.yml`:**
-
-| Service | Image | Ports | Dependencies |
-|---------|-------|-------|-------------|
-| postgres | postgres:15 | 5432 | — |
-| airflow-webserver | custom (extends apache/airflow:2.7) | 8080 | postgres |
-| airflow-scheduler | custom | — | postgres |
-| airflow-init | custom | — | postgres |
-| mlflow | custom (Python + mlflow) | 5000 | postgres |
-| feast-materialize | custom | — | postgres |
-| kafka | confluentinc/cp-kafka:7.5.0 | 9092 | zookeeper |
-| zookeeper | confluentinc/cp-zookeeper:7.5.0 | 2181 | — |
-| serving | custom (FastAPI) | 8000 | mlflow, postgres |
-| kafka-producer | custom (Python) | — | kafka, serving |
-| go-consumer | custom (Go) | 8081 | kafka, serving |
-| prometheus | prom/prometheus:v2.48.0 | 9090 | serving |
-| grafana | grafana/grafana:10.2.0 | 3000 | prometheus |
-
-**Volumes:**
-- `postgres_data` — PostgreSQL persistence
-- `mlflow_artifacts` — Model artifacts
-- `./data` — Raw/processed data mounted to relevant services
-- `./monitoring/grafana/provisioning` — Grafana auto-provisioning
-
-**Networks:**
-- Single `fraud-detection-net` bridge network
 
 ---
 
@@ -469,22 +289,19 @@ monitoring/
 
 ```
 ml-fraud-detection-platform/
-├── .github/
-│   └── workflows/
-│       ├── ci.yml               # Main CI: lint + test + docker build
-│       └── security.yml         # Dependency vulnerability scan
+├── .github/workflows/
+│   └── ci.yml                     # Lint + test + typecheck on push/PR
 ├── docker-compose.yml
-├── .env                         # Environment variables
-├── .env.example                 # Template
+├── Makefile
+├── .env.example
 ├── .gitignore
-├── plan.md                      # This file
+├── plan.md
 ├── README.md
 │
 ├── data/
-│   ├── raw/                     # Original dataset (gitignored)
-│   │   └── creditcard.csv
-│   ├── processed/               # Engineered features
-│   └── reports/                 # Evidently drift reports
+│   ├── raw/                       # creditcard.csv (gitignored)
+│   ├── processed/                 # features.parquet
+│   └── reports/                   # Evidently drift reports
 │
 ├── airflow/
 │   ├── Dockerfile
@@ -495,17 +312,9 @@ ml-fraud-detection-platform/
 │   └── plugins/
 │       └── feature_engineering.py
 │
-├── feature_store/
-│   └── feature_repo/
-│       ├── feature_store.yaml
-│       ├── entities.py
-│       ├── features.py
-│       └── data_sources.py
-│
 ├── training/
 │   ├── train_xgboost.py
 │   ├── train_autoencoder.py
-│   ├── train_isolation_forest.py
 │   ├── evaluate.py
 │   ├── model_registry.py
 │   ├── requirements.txt
@@ -525,50 +334,33 @@ ml-fraud-detection-platform/
 │   │   │   └── models.py
 │   │   └── models/
 │   │       ├── loader.py
-│   │       └── ab_testing.py
+│   │       ├── ab_testing.py
+│   │       └── explainer.py
 │   └── tests/
 │       ├── conftest.py
 │       ├── test_predict.py
 │       └── test_ab_testing.py
 │
-├── streaming/
-│   ├── producer/
-│   │   ├── Dockerfile
-│   │   ├── requirements.txt
-│   │   └── producer.py
-│   └── consumer/
-│       ├── Dockerfile
-│       ├── go.mod
-│       ├── main.go
-│       └── internal/
-│           ├── consumer.go
-│           ├── client.go
-│           └── producer.go
-│
 ├── monitoring/
-│   ├── grafana/
-│   │   ├── Dockerfile
-│   │   └── provisioning/
-│   │       ├── dashboards/
-│   │       │   ├── dashboard.yml
-│   │       │   └── fraud_detection.json
-│   │       └── datasources/
-│   │           └── datasource.yml
+│   ├── grafana/provisioning/
+│   │   ├── dashboards/
+│   │   │   ├── dashboard.yml
+│   │   │   └── fraud_detection.json
+│   │   └── datasources/
+│   │       └── datasource.yml
 │   ├── prometheus/
 │   │   └── prometheus.yml
-│   └── evidently/
-│       ├── drift_report.py
-│       └── requirements.txt
+│   └── alerting/
+│       └── rules.yml
 │
 ├── scripts/
-│   ├── download_data.py         # Download Kaggle dataset
-│   ├── seed_data.py             # Seed initial data
-│   └── run_training.sh          # Convenience script to run all training
+│   ├── download_data.py
+│   ├── drift_report.py
+│   └── run_training.sh
 │
 └── tests/
     ├── integration/
-    │   ├── test_pipeline_e2e.py
-    │   └── test_kafka_flow.py
+    │   └── test_pipeline_e2e.py
     └── conftest.py
 ```
 
@@ -576,331 +368,144 @@ ml-fraud-detection-platform/
 
 ## 6. Implementation Phases
 
-### Phase 1: Project Scaffold & Infrastructure Foundation
-**Duration:** ~1 day
+### Phase 1: Project Scaffold & Infrastructure Foundation ✅ DONE
 
-**Deliverables:**
-- Project directory structure created
-- `docker-compose.yml` with PostgreSQL, basic networking
-- `.env` / `.env.example` with all config variables
-- `.gitignore` covering data files, Python artifacts, Go binaries
-- PostgreSQL starts and accepts connections
-- Basic `Makefile` or `scripts/` for common operations
+**Deliverables:** Docker Compose + PostgreSQL + Makefile + `.env` / `.env.example`
 
 **Acceptance Criteria:**
-- `docker-compose up postgres` starts successfully
+- `docker compose up postgres` starts successfully
 - Can connect to PostgreSQL on `localhost:5432`
-- All directories exist with placeholder READMEs where needed
 
 ---
 
-### Phase 2: Data Ingestion & Exploratory Analysis
-**Duration:** ~1 day
+### Phase 2: Data Ingestion & EDA ✅ DONE
 
-**Deliverables:**
-- `scripts/download_data.py` — downloads Kaggle dataset (or manual instructions)
-- `training/notebooks/eda.ipynb` — EDA notebook with:
-  - Class distribution visualization
-  - Feature distributions and correlations
-  - Fraud vs. legitimate statistical comparison
-  - Missing value analysis
-- Data schema validation script
+**Files to create:**
+- `scripts/download_data.py` — Kaggle API download → `data/raw/creditcard.csv`
+- `training/notebooks/eda.ipynb` — class distribution, Amount/Time distributions, correlation heatmap, V-feature analysis
+- `airflow/plugins/feature_engineering.py` — pure functions: `log_transform_amount()`, `extract_time_features()`, `compute_interaction_features()`
+- `airflow/dags/data_ingestion_dag.py` — PythonOperator chain: load CSV → validate → engineer features → write Parquet
+
+**docker-compose.yml:** Uncomment Airflow block (init, webserver, scheduler)
 
 **Acceptance Criteria:**
-- Dataset present in `data/raw/creditcard.csv`
-- EDA notebook runs end-to-end and produces visualizations
-- Dataset has 284,807 rows, 31 columns, 492 fraud cases
+- `make download-data` produces `data/raw/creditcard.csv` (284,807 rows)
+- DAG runs end-to-end in Airflow UI, produces `data/processed/features.parquet`
+- EDA notebook renders cleanly, tells a clear story about the data
 
 ---
 
-### Phase 3: Feature Engineering & Feast Feature Store
-**Duration:** ~1 day
+### Phase 3: Model Training with MLflow
 
-**Deliverables:**
-- `airflow/plugins/feature_engineering.py` — feature engineering functions
-- Feast feature repository configured (`feature_store/`)
-- Feature definitions for all engineered features
-- Airflow DAG for data ingestion + feature engineering
-- Airflow added to `docker-compose.yml`
-- Features materialized to online + offline stores
+**Files to create:**
+- `training/evaluate.py` — `compute_metrics()`, `plot_roc_curve()`, `plot_pr_curve()`, `find_optimal_threshold()`
+- `training/train_xgboost.py` — load features, SMOTE, train, log to MLflow, register as `champion`
+- `training/train_autoencoder.py` — train on non-fraud only, threshold via PR curve, TorchScript export, register as `challenger`
+- `training/model_registry.py` — `promote_to_champion()`, `get_champion_run_id()`
+- `scripts/run_training.sh` — run both scripts, fail-fast
+- `Dockerfile.mlflow`
+
+**docker-compose.yml:** Uncomment MLflow block
 
 **Acceptance Criteria:**
-- `docker-compose up airflow-webserver airflow-scheduler` starts Airflow UI on `:8080`
-- DAG appears in Airflow UI and can be triggered manually
-- DAG runs successfully: raw data → engineered features → Feast store
-- Can query features from Feast offline store programmatically
-- Unit tests pass for feature engineering functions
+- MLflow UI at `localhost:5000` shows experiments with logged metrics
+- XGBoost AUC-ROC ≥ 0.95; both models registered with correct aliases
+- `bash scripts/run_training.sh` completes without error
 
 ---
 
-### Phase 4: Classical ML Training with MLflow
-**Duration:** ~1 day
+### Phase 4: FastAPI Serving + A/B Testing + Explainability
 
-**Deliverables:**
-- `training/train_xgboost.py` — XGBoost classifier training script
-- `training/train_isolation_forest.py` — Isolation Forest training script
-- `training/evaluate.py` — evaluation utilities (metrics, plots)
-- MLflow server added to `docker-compose.yml`
-- MLflow experiment with logged runs
-- Best model registered in MLflow model registry as `champion`
+**Files to create:**
+- `serving/app/config.py` — pydantic-settings: MLflow URI, A/B split, model aliases
+- `serving/app/schemas.py` — `TransactionRequest`, `PredictionResponse` (includes explanation field)
+- `serving/app/models/loader.py` — load champion + challenger from MLflow on startup
+- `serving/app/models/ab_testing.py` — deterministic hash routing
+- `serving/app/models/explainer.py` — SHAP TreeExplainer for XGBoost, top-k feature contributions
+- `serving/app/routes/predict.py` — `POST /predict`, `POST /predict/batch`
+- `serving/app/routes/health.py` — `GET /health`
+- `serving/app/routes/models.py` — `GET /models`
+- `serving/app/main.py` — wire routers, add Prometheus instrumentator
+- `serving/Dockerfile`
+- Tests: `conftest.py`, `test_predict.py`, `test_ab_testing.py`
+
+**docker-compose.yml:** Uncomment serving block
 
 **Acceptance Criteria:**
-- MLflow UI accessible at `localhost:5000`
-- XGBoost experiment shows: precision, recall, F1, AUC-ROC, PR-AUC, confusion matrix
-- Isolation Forest experiment shows: anomaly scores, contamination tuning
-- XGBoost achieves AUC-ROC > 0.95 (expected given this dataset)
-- Model registered with alias `champion` in registry
+- `GET /health` returns 200 with loaded models
+- `POST /predict` returns fraud score + model used + SHAP explanation
+- `make test-serving` passes
 
 ---
 
-### Phase 5: PyTorch Autoencoder Training
-**Duration:** ~1 day
+### Phase 5: Monitoring + Drift Detection
 
-**Deliverables:**
-- `training/train_autoencoder.py` — PyTorch autoencoder training
-- Model architecture: encoder-decoder with bottleneck
-- Training on legitimate transactions only
-- Threshold tuning based on reconstruction error percentiles
-- Model exported via TorchScript
-- Logged to MLflow with reconstruction error metrics
+**Files to create:**
+- `monitoring/prometheus/prometheus.yml` — scrape `serving:8000/metrics`
+- `monitoring/grafana/provisioning/dashboards/fraud_detection.json` — 4 panels
+- `monitoring/alerting/rules.yml` — high fraud rate, p99 latency > 500ms, error spike
+- `scripts/drift_report.py` — Evidently drift check, HTML output
+
+**docker-compose.yml:** Uncomment Prometheus + Grafana blocks
 
 **Acceptance Criteria:**
-- Training converges (loss decreases over epochs)
-- Reconstruction error clearly separates fraud vs. legitimate (visualized)
-- TorchScript model saved and loadable
-- MLflow experiment shows: loss curves, threshold, detection metrics
-- Model registered with alias `challenger` in registry
+- Grafana at `localhost:3000` shows live metrics from the API
+- `make drift-report` produces an HTML report in `data/reports/`
 
 ---
 
-### Phase 6: FastAPI Model Serving
-**Duration:** ~1 day
+### Phase 6: CI + Integration Tests + README
 
-**Deliverables:**
-- FastAPI application with all endpoints
-- Model loading from MLflow registry (XGBoost + Autoencoder)
-- Single prediction and batch prediction endpoints
-- Health check endpoint
-- Pydantic schemas for all request/response models
-- Dockerfile for serving container
-- Added to `docker-compose.yml`
+**Files to create:**
+- `.github/workflows/ci.yml` — lint (ruff + black), test (pytest), typecheck (mypy)
+- `airflow/dags/retrain_dag.py` — orchestrate retraining pipeline
+- `tests/integration/test_pipeline_e2e.py` — POST /predict works, /metrics has expected counters, MLflow has champion
+- `README.md` — architecture diagram, quickstart, screenshots, design decisions
 
 **Acceptance Criteria:**
-- `curl localhost:8000/health` returns healthy status with model info
-- `curl -X POST localhost:8000/predict` with valid payload returns prediction
-- `curl -X POST localhost:8000/predict/batch` handles multiple transactions
-- Response includes: prediction, probability, model version, latency
-- Error handling for invalid inputs (400), model not loaded (503)
-- Unit tests pass for prediction endpoints
-
----
-
-### Phase 7: A/B Testing Logic
-**Duration:** ~1 day
-
-**Deliverables:**
-- A/B testing module: traffic splitting based on transaction ID hash
-- Configuration via environment variables (split ratio)
-- Both models' predictions logged for every request
-- `/models` endpoint shows current A/B configuration
-- Metrics per model variant (separate Prometheus labels)
-
-**Acceptance Criteria:**
-- With 80/20 split, approximately 80% of requests go to champion, 20% to challenger
-- Consistent routing: same `transaction_id` always routes to the same model
-- Can change split ratio via env var and restart
-- `/models` endpoint shows both models and their traffic percentages
-- Tests verify routing consistency and approximate split ratios
-
----
-
-### Phase 8: Kafka Streaming Pipeline
-**Duration:** ~1.5 days
-
-**Deliverables:**
-- Kafka + Zookeeper added to `docker-compose.yml`
-- Python Kafka producer (`streaming/producer/`)
-- Go Kafka consumer (`streaming/consumer/`)
-- Producer reads dataset, adds noise, publishes to `transactions` topic
-- Consumer reads transactions, calls `/predict`, publishes to `predictions` topic
-- Go consumer with goroutines, structured logging, graceful shutdown
-- Health check endpoint on Go consumer
-
-**Acceptance Criteria:**
-- Kafka broker accessible on `localhost:9092`
-- Producer sends transactions at configurable rate
-- Go consumer processes transactions and calls serving API
-- Results appear on `predictions` topic
-- Go consumer handles API failures gracefully (retries, backoff)
-- `go vet` and `go test` pass
-- Consumer lag is minimal under normal load
-
----
-
-### Phase 9: Monitoring & Observability
-**Duration:** ~1.5 days
-
-**Deliverables:**
-- Prometheus configuration scraping FastAPI metrics
-- Custom Prometheus metrics in FastAPI (latency, throughput, per-model)
-- Evidently drift detection script
-- Grafana dashboards (provisioned automatically):
-  - Model performance dashboard
-  - Inference metrics dashboard
-  - Drift monitoring dashboard
-  - A/B test comparison dashboard
-- Airflow DAG for periodic drift checks
-- Alerting rules for drift thresholds
-
-**Acceptance Criteria:**
-- Prometheus UI at `localhost:9090` shows metrics from FastAPI
-- Grafana at `localhost:3000` loads with pre-configured dashboards
-- Dashboard panels display real data after running the Kafka pipeline
-- Evidently drift report generates successfully
-- Drift metrics exported to Prometheus
-
----
-
-### Phase 10: GitHub Actions CI
-
-**Duration:** ~0.5 days
-
-**Deliverables:**
-- `.github/workflows/ci.yml` — runs on every push and PR to `main`/`dev`:
-  - **Python lint:** `ruff check .` + `black --check .`
-  - **Python unit tests:** `pytest serving/tests/ airflow/tests/ training/tests/ -v`
-  - **Go checks:** `go vet ./...` + `go test ./... -v` in `streaming/consumer/`
-  - **Docker build validation:** `docker build` for all custom Dockerfiles (serving, airflow, producer, consumer)
-- `.github/workflows/security.yml` — weekly cron + on push:
-  - `pip-audit` for Python dependency vulnerabilities
-  - `govulncheck` for Go dependency vulnerabilities
-
-**Workflow structure (`ci.yml`):**
-```yaml
-name: CI
-
-on:
-  push:
-    branches: [main, dev]
-  pull_request:
-    branches: [main, dev]
-
-jobs:
-  python-lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-      - run: pip install ruff black
-      - run: ruff check .
-      - run: black --check .
-
-  python-tests:
-    runs-on: ubuntu-latest
-    needs: python-lint
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-      - run: pip install -r serving/requirements.txt pytest
-      - run: pytest serving/tests/ airflow/tests/ training/tests/ -v
-
-  go-checks:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: "1.21" }
-      - working-directory: streaming/consumer
-        run: |
-          go vet ./...
-          go test ./... -v
-
-  docker-builds:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        context:
-          - { path: airflow, dockerfile: airflow/Dockerfile }
-          - { path: serving, dockerfile: serving/Dockerfile }
-          - { path: streaming/producer, dockerfile: streaming/producer/Dockerfile }
-          - { path: streaming/consumer, dockerfile: streaming/consumer/Dockerfile }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - run: docker build -f ${{ matrix.context.dockerfile }} ${{ matrix.context.path }}
-```
-
-**Acceptance Criteria:**
-- All four jobs pass on a clean push to `dev`
-- PRs to `main` are blocked if any job fails
-- CI badge added to `README.md`
-- `security.yml` runs weekly and reports vulnerabilities (non-blocking on PRs)
-
----
-
-### Phase 11: Integration Testing & Documentation
-**Duration:** ~1 day
-
-**Deliverables:**
-- End-to-end integration test: full pipeline from data ingestion to prediction
-- Kafka flow integration test
-- `README.md` with:
-  - Project description and architecture diagram
-  - Setup instructions
-  - Usage examples with curl commands
-  - Screenshots of Grafana dashboards, MLflow UI
-  - Design decisions and trade-offs
-- Clean up code, add docstrings where needed
-- Final git tagging and cleanup
-
-**Acceptance Criteria:**
-- `docker-compose up` starts all services successfully
-- Full pipeline works: data → features → training → serving → streaming → monitoring
-- README is comprehensive and a new user could set up the project
-- All tests pass
-- No hardcoded secrets or credentials
+- CI passes on push to dev/main
+- `make test-integration` passes with services running
+- README quickstart works for a fresh clone (≤10 commands to first prediction)
 
 ---
 
 ## 7. API Contracts
 
-### POST /predict — Single Transaction Inference
+### POST /predict
 
 **Request:**
 ```json
 {
     "transaction_id": "550e8400-e29b-41d4-a716-446655440000",
     "features": {
-        "V1": -1.3598071336738,
-        "V2": -0.0727811733098497,
-        "V3": 2.53634673796914,
-        "V4": 1.37815522427443,
-        "V5": -0.338320769942518,
-        "V6": 0.462387777762292,
-        "V7": 0.239598554061257,
-        "V8": 0.0986979012610507,
-        "V9": 0.363786969611213,
-        "V10": 0.0907941719789316,
-        "V11": -0.551599533260813,
-        "V12": -0.617800855762348,
-        "V13": -0.991389847235408,
-        "V14": -0.311169353699879,
-        "V15": 1.46817697209427,
-        "V16": -0.470400525259478,
-        "V17": 0.207971241929242,
-        "V18": 0.0257905801985591,
-        "V19": 0.403992960255733,
-        "V20": 0.251412098239705,
-        "V21": -0.018306777944153,
-        "V22": 0.277837575558899,
-        "V23": -0.110473910188767,
-        "V24": 0.0669280749146731,
-        "V25": 0.128539358273528,
-        "V26": -0.189114843888824,
-        "V27": 0.133558376740387,
-        "V28": -0.0210530534538215,
+        "V1": -1.359807,
+        "V2": -0.072781,
+        "V3": 2.536347,
+        "V4": 1.378155,
+        "V5": -0.338321,
+        "V6": 0.462388,
+        "V7": 0.239599,
+        "V8": 0.098698,
+        "V9": 0.363787,
+        "V10": 0.090794,
+        "V11": -0.551600,
+        "V12": -0.617801,
+        "V13": -0.991390,
+        "V14": -0.311169,
+        "V15": 1.468177,
+        "V16": -0.470401,
+        "V17": 0.207971,
+        "V18": 0.025791,
+        "V19": 0.403993,
+        "V20": 0.251412,
+        "V21": -0.018307,
+        "V22": 0.277838,
+        "V23": -0.110474,
+        "V24": 0.066928,
+        "V25": 0.128539,
+        "V26": -0.189115,
+        "V27": 0.133558,
+        "V28": -0.021053,
         "Amount": 149.62
     }
 }
@@ -910,43 +515,30 @@ jobs:
 ```json
 {
     "transaction_id": "550e8400-e29b-41d4-a716-446655440000",
-    "prediction": 0,
     "fraud_probability": 0.032,
     "is_fraud": false,
-    "model_version": "xgboost-v3",
     "model_name": "xgboost-champion",
+    "model_version": "3",
+    "explanation": {
+        "top_features": [
+            {"feature": "V14", "contribution": -0.28},
+            {"feature": "V12", "contribution": -0.15},
+            {"feature": "Amount", "contribution": 0.08}
+        ]
+    },
     "latency_ms": 4.2,
-    "timestamp": "2024-01-15T10:30:00.004Z"
+    "timestamp": "2025-01-15T10:30:00Z"
 }
 ```
 
-**Error Response (422):**
-```json
-{
-    "detail": [
-        {
-            "loc": ["body", "features", "V1"],
-            "msg": "field required",
-            "type": "value_error.missing"
-        }
-    ]
-}
-```
-
-### POST /predict/batch — Batch Inference
+### POST /predict/batch
 
 **Request:**
 ```json
 {
     "transactions": [
-        {
-            "transaction_id": "uuid-1",
-            "features": { "V1": -1.35, "...": "...", "Amount": 149.62 }
-        },
-        {
-            "transaction_id": "uuid-2",
-            "features": { "V1": 1.19, "...": "...", "Amount": 2.69 }
-        }
+        {"transaction_id": "uuid-1", "features": {"V1": -1.35, "...": "...", "Amount": 149.62}},
+        {"transaction_id": "uuid-2", "features": {"V1": 1.19, "...": "...", "Amount": 2.69}}
     ]
 }
 ```
@@ -957,67 +549,45 @@ jobs:
     "predictions": [
         {
             "transaction_id": "uuid-1",
-            "prediction": 0,
             "fraud_probability": 0.032,
             "is_fraud": false,
-            "model_version": "xgboost-v3",
             "model_name": "xgboost-champion",
+            "model_version": "3",
             "latency_ms": 4.2
         },
         {
             "transaction_id": "uuid-2",
-            "prediction": 1,
             "fraud_probability": 0.94,
             "is_fraud": true,
-            "model_version": "xgboost-v3",
             "model_name": "xgboost-champion",
+            "model_version": "3",
             "latency_ms": 3.8
         }
     ],
-    "total_latency_ms": 8.0,
     "count": 2,
-    "timestamp": "2024-01-15T10:30:00.008Z"
+    "total_latency_ms": 8.0,
+    "timestamp": "2025-01-15T10:30:00Z"
 }
 ```
 
-### GET /health — Health Check
+### GET /health
 
 **Response (200):**
 ```json
 {
     "status": "healthy",
     "models": {
-        "champion": {
-            "name": "xgboost-fraud-detector",
-            "version": "3",
-            "status": "loaded"
-        },
-        "challenger": {
-            "name": "autoencoder-fraud-detector",
-            "version": "1",
-            "status": "loaded"
-        }
+        "champion": {"name": "xgboost-fraud-detector", "version": "3", "status": "loaded"},
+        "challenger": {"name": "autoencoder-fraud-detector", "version": "1", "status": "loaded"}
     },
     "ab_test": {
-        "enabled": true,
         "champion_traffic": 0.8,
         "challenger_traffic": 0.2
     }
 }
 ```
 
-**Response (503 — model not loaded):**
-```json
-{
-    "status": "degraded",
-    "models": {
-        "champion": { "status": "loaded" },
-        "challenger": { "status": "error", "error": "Failed to load from registry" }
-    }
-}
-```
-
-### GET /models — Model Information
+### GET /models
 
 **Response (200):**
 ```json
@@ -1028,41 +598,16 @@ jobs:
             "version": "3",
             "role": "champion",
             "traffic_percentage": 80,
-            "type": "xgboost",
-            "metrics": {
-                "auc_roc": 0.978,
-                "f1_score": 0.85,
-                "precision": 0.92,
-                "recall": 0.79
-            }
+            "metrics": {"auc_roc": 0.978, "pr_auc": 0.82, "f1": 0.85}
         },
         {
             "name": "autoencoder-fraud-detector",
             "version": "1",
             "role": "challenger",
             "traffic_percentage": 20,
-            "type": "pytorch-autoencoder",
-            "metrics": {
-                "auc_roc": 0.952,
-                "f1_score": 0.78,
-                "precision": 0.84,
-                "recall": 0.73
-            }
+            "metrics": {"auc_roc": 0.952, "pr_auc": 0.74, "f1": 0.78}
         }
     ]
-}
-```
-
-### Go Consumer Health — GET :8081/health
-
-**Response (200):**
-```json
-{
-    "status": "healthy",
-    "kafka_connected": true,
-    "messages_processed": 15234,
-    "errors": 3,
-    "uptime_seconds": 3600
 }
 ```
 
@@ -1074,59 +619,30 @@ jobs:
 
 | Component | Test File | What's Tested |
 |-----------|-----------|---------------|
-| Feature Engineering | `airflow/tests/test_feature_engineering.py` | Each feature transform function in isolation |
-| Model Evaluation | `training/tests/test_evaluate.py` | Metric computation, threshold selection |
-| API Schemas | `serving/tests/test_schemas.py` | Pydantic model validation |
-| A/B Testing | `serving/tests/test_ab_testing.py` | Routing consistency, split ratios |
-| Prediction Endpoints | `serving/tests/test_predict.py` | Happy path, error cases, batch limits |
+| Feature Engineering | `airflow/tests/test_feature_engineering.py` | Each transform function in isolation |
+| Evaluation Utils | `training/tests/test_evaluate.py` | Metric computation, threshold selection |
+| A/B Testing | `serving/tests/test_ab_testing.py` | Routing determinism, approximate split ratio |
+| Prediction Endpoints | `serving/tests/test_predict.py` | Happy path, validation errors, batch limits |
 
 ### Integration Tests
 
 | Test | What's Verified |
 |------|----------------|
-| `tests/integration/test_pipeline_e2e.py` | Data ingestion → feature engineering → Feast materialization |
-| `tests/integration/test_kafka_flow.py` | Producer → Kafka → Consumer → API → Predictions topic |
-| `tests/integration/test_model_serving.py` | Model loading from MLflow → inference → correct response |
+| `tests/integration/test_pipeline_e2e.py` | POST /predict returns valid response; /metrics has expected counters; MLflow has champion alias |
 
-### Verification Per Phase
+### CI (GitHub Actions)
 
-- **Phase 1:** `docker-compose up postgres` → `psql` connection test
-- **Phase 2:** Run EDA notebook → verify output cells
-- **Phase 3:** Trigger Airflow DAG → verify Feast store populated
-- **Phase 4:** Run training script → verify MLflow experiment/metrics
-- **Phase 5:** Run autoencoder training → verify TorchScript export loads
-- **Phase 6:** `curl` all API endpoints → verify response schemas
-- **Phase 7:** Send 1000 requests → verify ~80/20 split in Prometheus metrics
-- **Phase 8:** Run producer + consumer → verify messages flow end-to-end
-- **Phase 9:** Check Grafana dashboards populate with real metrics
-- **Phase 10:** Push to `dev` → all CI jobs pass (lint, tests, Go, Docker builds)
-- **Phase 11:** Full `docker-compose up` → end-to-end smoke test
-
-### CI Enforcement (GitHub Actions)
-
-All unit tests, linting, and Docker builds run automatically on every push and PR via `.github/workflows/ci.yml`. PRs to `main` require all jobs to pass. See **Phase 10** for workflow details.
+- **Trigger:** push/PR to `main` or `dev`
+- **Jobs:** `lint` (ruff + black --check), `test` (pytest), `typecheck` (mypy on serving/ + training/)
+- PRs to `main` require all jobs to pass
 
 ### Test Commands
 ```bash
-# Unit tests
-pytest serving/tests/ -v
-pytest airflow/tests/ -v
-pytest training/tests/ -v
-
-# Go tests
-cd streaming/consumer && go test ./... -v
-
-# Integration tests (requires docker-compose up)
-pytest tests/integration/ -v
-
-# Linting
-ruff check .
-black --check .
-go vet ./...
-
-# Security scan (local)
-pip-audit
-govulncheck ./...
+make test                # All unit tests
+make test-serving        # serving/tests/ only
+make test-training       # training/ tests only
+make test-integration    # Integration (requires services up)
+make check               # format-check + lint + typecheck + test
 ```
 
 ---
@@ -1136,88 +652,91 @@ govulncheck ./...
 ```markdown
 # ML Fraud Detection Platform
 
-![CI](https://github.com/<your-username>/ml-fraud-detection-platform/actions/workflows/ci.yml/badge.svg)
+![CI](badge-url)
 
-> End-to-end machine learning platform for real-time financial fraud detection
-> with MLOps best practices, streaming pipelines, and production monitoring.
+End-to-end fraud detection with MLOps best practices: imbalanced data handling,
+experiment tracking, A/B model testing, explainable predictions, and drift monitoring.
 
-## Overview
-- What this project does (2-3 sentences)
-- Key capabilities: real-time + batch inference, A/B testing, drift monitoring
-- Architecture diagram (Mermaid)
+## The Problem
+- Credit card fraud is <1% of transactions — accuracy is meaningless
+- False negatives cost money, false positives frustrate customers
+- Fraud patterns evolve — models need monitoring and retraining
 
 ## Architecture
-- System diagram
-- Data flow description
-- Component interaction
+[Mermaid diagram]
 
 ## Tech Stack
-- Table with: tool, purpose, link
-- Why each was chosen
+[Table: tool → purpose]
 
 ## Quick Start
-### Prerequisites
-- Docker & Docker Compose
-- 8GB+ RAM recommended
-- Kaggle account (for dataset download)
+1. Clone + copy .env.example → .env
+2. Download dataset
+3. docker compose up -d
+4. Train models
+5. Hit the API
+(≤10 commands from clone to first prediction)
 
-### Setup
-1. Clone the repo
-2. Copy .env.example → .env
-3. Download dataset (script provided)
-4. docker-compose up -d
-5. Wait for services to initialize
-6. Access UIs: Airflow :8080, MLflow :5000, Grafana :3000, API :8000
+## Key Features
+- **Imbalanced data handling**: SMOTE + cost-sensitive evaluation
+- **Two model approaches**: XGBoost (supervised) + Autoencoder (unsupervised anomaly detection)
+- **A/B testing**: deterministic routing, compare models on live traffic
+- **Explainability**: SHAP-based feature attributions on every prediction
+- **Drift detection**: Evidently reports comparing training vs serving distributions
+- **Monitoring**: Grafana dashboards for latency, fraud rate, A/B splits
 
-### Train Models
-- Run training scripts (or trigger via Airflow)
+## Design Decisions
+- Why XGBoost + Autoencoder (complementary approaches to the same problem)
+- Why PR-AUC over ROC-AUC for evaluation (more informative on imbalanced data)
+- Why SHAP (compliance, trust, debugging)
+- Simplifications made for portfolio context (single-node, no Kubernetes, local Kafka alternative)
 
-### Run Streaming Pipeline
-- Start producer and consumer
-
-## Usage Examples
-- curl commands for all endpoints
-- Screenshots of:
-  - Grafana dashboards
-  - MLflow experiment tracking
-  - Airflow DAG runs
-
-## Design Decisions & Trade-offs
-- Why XGBoost + Autoencoder (classical + deep learning)
-- Why Feast over ad-hoc feature computation
-- Why Go for the consumer
-- Simplifications made for portfolio context
-
-## Project Structure
-- Directory tree with descriptions
-
-## Future Improvements
-- Kubernetes deployment
-- CI/CD pipeline for model training
-- Online learning / incremental training
-- Feature importance monitoring
+## Screenshots
+- Grafana dashboard
+- MLflow experiment comparison
+- SHAP explanation output
+- Airflow DAG view
 ```
 
 ---
 
-## 10. CV Integration
+## 10. Design Decisions & Trade-offs
 
-The following bullet points can be added to a CV/resume after completing this project:
+This section documents deliberate choices — what was included, what was left out, and why.
 
-1. **"Designed and built an end-to-end ML platform for real-time fraud detection, processing 10+ transactions/second through Kafka streaming pipelines with sub-50ms inference latency"**
+### What's in scope and why
 
-2. **"Trained and deployed XGBoost and PyTorch autoencoder models achieving 0.97+ AUC-ROC on imbalanced financial data (0.17% fraud rate), with automated model versioning via MLflow"**
+| Decision | Rationale |
+|----------|-----------|
+| **Airflow for orchestration** | Multi-step DAGs (ingest → features → train → register) benefit from dependency management, retries, and a UI to inspect failures. A cron + script approach would work but wouldn't demonstrate orchestration skills. |
+| **Two model types** | XGBoost is the practical choice for tabular fraud detection. The autoencoder shows a different paradigm (unsupervised anomaly detection). Comparing them via A/B testing is how teams actually evaluate alternatives. |
+| **SHAP explanations** | In fraud detection, "why was this flagged?" matters for compliance and customer trust. SHAP is the standard tool. It's a few lines of code but adds real portfolio signal. |
+| **Evidently as a script** | Drift detection is important to show awareness of, but a full drift pipeline would be overkill here. A standalone script that generates an HTML report is honest and useful. |
+| **PR-AUC alongside ROC-AUC** | On datasets this imbalanced, ROC-AUC can look great even when the model is mediocre. PR-AUC tells a more honest story. Reporting both shows awareness. |
 
-3. **"Implemented A/B testing framework for ML model comparison, enabling data-driven model promotion decisions between classical ML and deep learning approaches"**
+### What's deliberately out of scope
 
-4. **"Built feature engineering pipelines orchestrated by Apache Airflow with Feast feature store, ensuring consistent feature computation across training and serving environments"**
+| Omitted | Why |
+|---------|-----|
+| **Kafka / streaming** | Would add 3+ containers (Zookeeper, Kafka, producer) for a synthetic demo stream. Impressive infrastructure, but the ML signal-to-noise ratio drops. Noted in README as a potential extension. |
+| **Go consumer** | Cool polyglot addition, but doesn't serve the ML story. Would be appropriate in a systems engineering portfolio. |
+| **Feast feature store** | The dataset is a single static CSV. A feature store solves the "training-serving skew" problem across multiple data sources — that problem doesn't exist here. Using Feast would look forced. |
+| **Kubernetes** | Single-node Docker Compose is honest for a local portfolio project. K8s would add YAML complexity without demonstrating anything the project needs. |
+| **Isolation Forest** | Three models is one too many for this project. XGBoost + Autoencoder already shows supervised + unsupervised. A third model adds diminishing returns. |
 
-5. **"Developed production monitoring stack with Evidently AI drift detection, Prometheus metrics, and Grafana dashboards tracking inference latency (p50/p95/p99), model accuracy, and data drift"**
+---
 
-6. **"Engineered a Go-based Kafka consumer service for high-throughput transaction processing with concurrent goroutine-based architecture and graceful shutdown handling"**
+## 11. What to Say in an Interview
 
-7. **"Established MLOps practices including experiment tracking, model registry with staging/production lifecycle, automated retraining triggers on drift detection, and TorchScript model export for optimized inference"**
+> **"Tell me about your fraud detection project."**
 
-8. **"Containerized 12+ microservices via Docker Compose with health checks, volume persistence, and single-command deployment for a complete ML platform stack"**
+*"I built a fraud detection platform using the credit card fraud dataset — 284K transactions with only 0.17% fraud. The core challenge was imbalanced data: a naive model gets 99.8% accuracy by never predicting fraud.*
 
-9. **"Configured GitHub Actions CI pipeline enforcing Python linting (ruff/black), pytest unit tests, Go build/vet/test, and Docker build validation on every PR — blocking merges on failure"**
+*I trained two models: XGBoost as the primary classifier with SMOTE oversampling, and a PyTorch autoencoder that learns what normal transactions look like and flags anomalies by reconstruction error. Both are tracked in MLflow with full experiment logging.*
+
+*For evaluation, I focused on precision-recall rather than accuracy — because in fraud detection, the cost of missing a fraud is very different from the cost of a false alarm. I added SHAP explanations to every prediction so you can see which features drove the decision.*
+
+*The models are served via FastAPI with A/B testing — deterministic hash routing so the same transaction always goes to the same model. Prometheus and Grafana track latency, fraud rates, and the A/B split. There's also an Evidently drift report to check if the incoming data distribution has shifted from training.*
+
+*The whole thing runs on Docker Compose — Airflow orchestrates the pipeline, MLflow tracks experiments, and everything comes up with one command."*
+
+This covers: data awareness, imbalance handling, cost-sensitive thinking, explainability, serving, monitoring, and infrastructure — without claiming it's something it's not.

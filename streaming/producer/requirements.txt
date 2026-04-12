@@ -1,4 +1,0 @@
-# Kafka producer — minimal dependencies.
-confluent-kafka==2.3.0
-pandas==2.1.4
-numpy==1.26.3

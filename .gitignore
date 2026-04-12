@@ -45,11 +45,6 @@ data/reports/*
 !data/processed/.gitkeep
 !data/reports/.gitkeep
 
-# ── Go ────────────────────────────────────────────────────────────────────────
-streaming/consumer/fraud-consumer
-streaming/consumer/*.exe
-streaming/consumer/vendor/
-
 # ── Secrets & environment ─────────────────────────────────────────────────────
 .env
 !.env.example
@@ -65,9 +60,7 @@ desktop.ini
 *.swp
 *.swo
 
-# ── Feast ─────────────────────────────────────────────────────────────────────
-feature_store/feature_repo/data/
-feature_store/feature_repo/registry.db
-feature_store/feature_repo/online_store.db
 # ── Claude Code ───────────────────────────────────────────────────────────────
 .claude/
+project_example.txt
+CLAUDE.md

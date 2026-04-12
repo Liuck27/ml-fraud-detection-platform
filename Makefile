@@ -8,14 +8,12 @@ ifeq ($(OS),Windows_NT)
     PYTHON_TRAINING := training/.venv/Scripts/python
     PYTHON_SERVING  := serving/.venv/Scripts/python
     PYTHON_AIRFLOW  := airflow/.venv/Scripts/python
-    PYTHON_PRODUCER := streaming/producer/.venv/Scripts/python
     PYTHON_EVIDENTLY:= monitoring/evidently/.venv/Scripts/python
 else
     PYTHON          := .venv/bin/python
     PYTHON_TRAINING := training/.venv/bin/python
     PYTHON_SERVING  := serving/.venv/bin/python
     PYTHON_AIRFLOW  := airflow/.venv/bin/python
-    PYTHON_PRODUCER := streaming/producer/.venv/bin/python
     PYTHON_EVIDENTLY:= monitoring/evidently/.venv/bin/python
 endif
 
@@ -75,16 +73,10 @@ venv-serving: ## Create the serving venv (fastapi, mlflow, prometheus...)
 	$(PYTHON_SERVING) -m pip install -r serving/requirements.txt
 
 .PHONY: venv-airflow
-venv-airflow: ## Create the airflow venv — slow (~5-10 min), Airflow + Feast
+venv-airflow: ## Create the airflow venv — slow (~5-10 min) due to Airflow's large dependency graph
 	python -m venv airflow/.venv
 	$(PYTHON_AIRFLOW) -m pip install --upgrade pip
 	$(PYTHON_AIRFLOW) -m pip install -r airflow/requirements.txt
-
-.PHONY: venv-producer
-venv-producer: ## Create the Kafka producer venv
-	python -m venv streaming/producer/.venv
-	$(PYTHON_PRODUCER) -m pip install --upgrade pip
-	$(PYTHON_PRODUCER) -m pip install -r streaming/producer/requirements.txt
 
 .PHONY: venv-evidently
 venv-evidently: ## Create the Evidently monitoring venv
@@ -93,12 +85,11 @@ venv-evidently: ## Create the Evidently monitoring venv
 	$(PYTHON_EVIDENTLY) -m pip install -r monitoring/evidently/requirements.txt
 
 .PHONY: venv-all
-venv-all: venv venv-training venv-serving venv-airflow venv-producer venv-evidently ## Create ALL venvs
+venv-all: venv venv-training venv-serving venv-airflow venv-evidently ## Create ALL venvs
 
 .PHONY: clean-venvs
 clean-venvs: ## Remove all .venv directories (run venv-all afterwards to rebuild)
-	rm -rf .venv training/.venv serving/.venv airflow/.venv \
-		streaming/producer/.venv monitoring/evidently/.venv
+	rm -rf .venv training/.venv serving/.venv airflow/.venv monitoring/evidently/.venv
 
 # ── Code Quality ───────────────────────────────────────────────────────────────
 
@@ -128,7 +119,6 @@ audit: ## Run pip-audit security scan on all requirements files
 	$(PYTHON) -m pip_audit -r training/requirements.txt
 	$(PYTHON) -m pip_audit -r serving/requirements.txt
 	$(PYTHON) -m pip_audit -r airflow/requirements.txt
-	$(PYTHON) -m pip_audit -r streaming/producer/requirements.txt
 	$(PYTHON) -m pip_audit -r monitoring/evidently/requirements.txt
 
 # ── Testing ────────────────────────────────────────────────────────────────────
@@ -153,29 +143,11 @@ test-integration: ## Run integration tests (requires docker compose services up)
 .PHONY: check
 check: format-check lint typecheck test ## Run all checks — equivalent to CI
 
-# ── Go ─────────────────────────────────────────────────────────────────────────
-
-.PHONY: go-build
-go-build: ## Build the Go Kafka consumer binary
-	cd streaming/consumer && go build -o fraud-consumer ./...
-
-.PHONY: go-test
-go-test: ## Run Go tests
-	cd streaming/consumer && go test ./... -v
-
-.PHONY: go-vet
-go-vet: ## Run go vet on the consumer
-	cd streaming/consumer && go vet ./...
-
 # ── Data ───────────────────────────────────────────────────────────────────────
 
 .PHONY: download-data
 download-data: ## Download Kaggle fraud dataset (set KAGGLE_USERNAME + KAGGLE_KEY in .env)
 	$(PYTHON) scripts/download_data.py
-
-.PHONY: seed-db
-seed-db: ## Seed the database with initial metadata
-	$(PYTHON) scripts/seed_data.py
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 

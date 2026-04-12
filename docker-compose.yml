@@ -73,32 +73,33 @@ services:
   #     - fraud-net
 
   # ── Airflow ─────────────────────────────────────────────────────────────────
-  # Uncomment all three containers in Phase 3.
-  #
-  # airflow-init:
-  #   <<: *airflow-common
-  #   container_name: fraud_airflow_init
-  #   command: >
-  #     bash -c "airflow db init &&
-  #              airflow users create
-  #                --username admin --password admin
-  #                --firstname Admin --lastname User
-  #                --role Admin --email admin@example.com"
-  #   restart: on-failure
-  #
-  # airflow-webserver:
-  #   <<: *airflow-common
-  #   container_name: fraud_airflow_webserver
-  #   command: webserver
-  #   ports:
-  #     - "${AIRFLOW_PORT:-8080}:8080"
-  #   restart: unless-stopped
-  #
-  # airflow-scheduler:
-  #   <<: *airflow-common
-  #   container_name: fraud_airflow_scheduler
-  #   command: scheduler
-  #   restart: unless-stopped
+  # Phase 2: Airflow init, webserver, and scheduler.
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: fraud_airflow_init
+    command: ["bash", "-c", "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true"]
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: fraud_airflow_webserver
+    command: webserver
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: fraud_airflow_scheduler
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
 
   # ── Zookeeper ───────────────────────────────────────────────────────────────
   # Uncomment in Phase 8.
