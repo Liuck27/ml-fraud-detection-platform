@@ -143,6 +143,19 @@ test-integration: ## Run integration tests (requires docker compose services up)
 .PHONY: check
 check: format-check lint typecheck test ## Run all checks — equivalent to CI
 
+# ── Training ───────────────────────────────────────────────────────────────
+
+.PHONY: train-xgboost
+train-xgboost: ## Train XGBoost classifier and register as champion in MLflow
+	$(PYTHON_TRAINING) training/train_xgboost.py
+
+.PHONY: train-autoencoder
+train-autoencoder: ## Train Autoencoder and register as challenger in MLflow
+	$(PYTHON_TRAINING) training/train_autoencoder.py
+
+.PHONY: train
+train: train-xgboost train-autoencoder ## Train both models (XGBoost + Autoencoder)
+
 # ── Data ───────────────────────────────────────────────────────────────────────
 
 .PHONY: download-data

@@ -48,29 +48,29 @@ services:
       - fraud-net
 
   # ── MLflow ─────────────────────────────────────────────────────────────────
-  # Uncomment in Phase 4.
-  # mlflow:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.mlflow
-  #   container_name: fraud_mlflow
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   ports:
-  #     - "${MLFLOW_PORT:-5000}:5000"
-  #   volumes:
-  #     - mlflow_artifacts:/app/mlartifacts
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   command: >
-  #     mlflow server
-  #     --backend-store-uri ${MLFLOW_BACKEND_STORE_URI}
-  #     --default-artifact-root ${MLFLOW_ARTIFACT_ROOT}
-  #     --host 0.0.0.0
-  #     --port 5000
-  #   networks:
-  #     - fraud-net
+  # Phase 3: experiment tracking + model registry.
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    container_name: fraud_mlflow
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - mlflow_artifacts:/app/mlartifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      mlflow server
+      --backend-store-uri ${MLFLOW_BACKEND_STORE_URI}
+      --default-artifact-root ${MLFLOW_ARTIFACT_ROOT}
+      --host 0.0.0.0
+      --port 5000
+    networks:
+      - fraud-net
 
   # ── Airflow ─────────────────────────────────────────────────────────────────
   # Phase 2: Airflow init, webserver, and scheduler.
