@@ -167,21 +167,22 @@ services:
   #     - fraud-net
 
   # ── FastAPI Serving ──────────────────────────────────────────────────────────
-  # Uncomment in Phase 6.
-  # serving:
-  #   build:
-  #     context: ./serving
-  #     dockerfile: Dockerfile
-  #   container_name: fraud_serving
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   ports:
-  #     - "${SERVING_PORT:-8000}:8000"
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   networks:
-  #     - fraud-net
+  serving:
+    build:
+      context: ./serving
+      dockerfile: Dockerfile
+    container_name: fraud_serving
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${SERVING_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    networks:
+      - fraud-net
 
   # ── Prometheus ───────────────────────────────────────────────────────────────
   # Uncomment in Phase 9.

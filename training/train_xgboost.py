@@ -14,7 +14,9 @@ Requires MLFLOW_TRACKING_URI env var (defaults to http://localhost:5000).
 from __future__ import annotations
 
 import os
+import pickle
 import sys
+import tempfile
 from pathlib import Path
 
 # Ensure sibling modules (evaluate, model_registry) are importable when the
@@ -138,6 +140,14 @@ def main() -> None:
         mlflow.log_figure(pr_fig, "pr_curve.png")
         import matplotlib.pyplot as plt
         plt.close("all")
+
+        # Log the fitted StandardScaler so the serving layer can reproduce the
+        # exact same scaling without refitting on production data.
+        with tempfile.TemporaryDirectory() as tmp:
+            scaler_path = Path(tmp) / "scaler.pkl"
+            with open(scaler_path, "wb") as f:
+                pickle.dump(scaler, f)
+            mlflow.log_artifact(str(scaler_path), artifact_path="scaler")
 
         # Register model
         model_info = mlflow.xgboost.log_model(
