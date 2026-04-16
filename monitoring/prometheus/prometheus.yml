@@ -1,4 +1,3 @@
-# Prometheus scrape configuration. Full implementation in Phase 9.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -11,8 +10,7 @@ scrape_configs:
     static_configs:
       - targets: [localhost:9090]
 
-  # FastAPI serving metrics (Phase 9)
-  # - job_name: fraud_serving
-  #   static_configs:
-  #     - targets: [serving:8000]
-  #   metrics_path: /metrics
+  - job_name: fraud_serving
+    static_configs:
+      - targets: [serving:8000]
+    metrics_path: /metrics

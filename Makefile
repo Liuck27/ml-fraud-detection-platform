@@ -158,9 +158,17 @@ train: train-xgboost train-autoencoder ## Train both models (XGBoost + Autoencod
 
 # ── Data ───────────────────────────────────────────────────────────────────────
 
+.PHONY: up-monitoring
+up-monitoring: ## Start Prometheus + Grafana (Phase 5)
+	docker compose up -d prometheus grafana
+
 .PHONY: download-data
 download-data: ## Download Kaggle fraud dataset (set KAGGLE_USERNAME + KAGGLE_KEY in .env)
 	$(PYTHON) scripts/download_data.py
+
+.PHONY: drift-report
+drift-report: ## Generate Evidently drift report → data/reports/drift_report.html
+	$(PYTHON_EVIDENTLY) scripts/drift_report.py
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 

@@ -1,8 +1,7 @@
-# Grafana dashboard provisioning config. Full implementation in Phase 9.
 apiVersion: 1
 providers:
   - name: fraud-detection
-    folder: Fraud Detection
+    folder: Monitoring
     type: file
     options:
       path: /etc/grafana/provisioning/dashboards

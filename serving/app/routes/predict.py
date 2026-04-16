@@ -9,6 +9,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException
 
 from serving.app.config import get_settings
+from serving.app.metrics import AB_ASSIGNMENTS, INFERENCE_ERRORS, INFERENCE_LATENCY, INFERENCE_TOTAL
 from serving.app.models.ab_testing import route_to_challenger
 from serving.app.models.explainer import get_explainer
 from serving.app.models.loader import ModelRegistry, get_registry
@@ -58,27 +59,35 @@ def predict(request: TransactionRequest) -> PredictionResponse:
     settings = get_settings()
 
     if not registry.xgb_loaded and not registry.ae_loaded:
+        INFERENCE_ERRORS.labels(model_name="unknown").inc()
         raise HTTPException(status_code=503, detail="No models available")
 
     use_challenger = _select_model(
         request.transaction_id, registry, settings.ab_challenger_fraction
     )
+    AB_ASSIGNMENTS.labels(model_variant="challenger" if use_challenger else "champion").inc()
 
     t0 = time.perf_counter()
     df = registry.prepare_features(request.features)
 
-    if use_challenger:
-        proba, is_fraud = registry.predict_ae(df)
-        model_name = f"{registry._ae_name}-{registry._challenger_alias}"
-        model_version = registry._ae_version
-        explanation = Explanation(top_features=[])
-    else:
-        proba, is_fraud = registry.predict_xgb(df)
-        model_name = f"{registry._xgb_name}-{registry._champion_alias}"
-        model_version = registry._xgb_version
-        explanation = _shap_explanation(registry, df)
+    try:
+        if use_challenger:
+            proba, is_fraud = registry.predict_ae(df)
+            model_name = f"{registry._ae_name}-{registry._challenger_alias}"
+            model_version = registry._ae_version
+            explanation = Explanation(top_features=[])
+        else:
+            proba, is_fraud = registry.predict_xgb(df)
+            model_name = f"{registry._xgb_name}-{registry._champion_alias}"
+            model_version = registry._xgb_version
+            explanation = _shap_explanation(registry, df)
+    except Exception:
+        INFERENCE_ERRORS.labels(model_name="challenger" if use_challenger else "champion").inc()
+        raise
 
     latency_ms = (time.perf_counter() - t0) * 1000
+    INFERENCE_LATENCY.labels(model_name=model_name).observe(latency_ms / 1000)
+    INFERENCE_TOTAL.labels(model_name=model_name, prediction="fraud" if is_fraud else "legit").inc()
 
     return PredictionResponse(
         transaction_id=request.transaction_id,
@@ -98,6 +107,7 @@ def predict_batch(request: BatchRequest) -> BatchResponse:
     settings = get_settings()
 
     if not registry.xgb_loaded and not registry.ae_loaded:
+        INFERENCE_ERRORS.labels(model_name="unknown").inc()
         raise HTTPException(status_code=503, detail="No models available")
 
     t_total_start = time.perf_counter()
@@ -107,20 +117,27 @@ def predict_batch(request: BatchRequest) -> BatchResponse:
         use_challenger = _select_model(
             txn.transaction_id, registry, settings.ab_challenger_fraction
         )
+        AB_ASSIGNMENTS.labels(model_variant="challenger" if use_challenger else "champion").inc()
 
         t0 = time.perf_counter()
         df = registry.prepare_features(txn.features)
 
-        if use_challenger:
-            proba, is_fraud = registry.predict_ae(df)
-            model_name = f"{registry._ae_name}-{registry._challenger_alias}"
-            model_version = registry._ae_version
-        else:
-            proba, is_fraud = registry.predict_xgb(df)
-            model_name = f"{registry._xgb_name}-{registry._champion_alias}"
-            model_version = registry._xgb_version
+        try:
+            if use_challenger:
+                proba, is_fraud = registry.predict_ae(df)
+                model_name = f"{registry._ae_name}-{registry._challenger_alias}"
+                model_version = registry._ae_version
+            else:
+                proba, is_fraud = registry.predict_xgb(df)
+                model_name = f"{registry._xgb_name}-{registry._champion_alias}"
+                model_version = registry._xgb_version
+        except Exception:
+            INFERENCE_ERRORS.labels(model_name="challenger" if use_challenger else "champion").inc()
+            raise
 
         latency_ms = (time.perf_counter() - t0) * 1000
+        INFERENCE_LATENCY.labels(model_name=model_name).observe(latency_ms / 1000)
+        INFERENCE_TOTAL.labels(model_name=model_name, prediction="fraud" if is_fraud else "legit").inc()
 
         predictions.append(
             BatchPredictionItem(
