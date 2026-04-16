@@ -67,7 +67,9 @@ def main() -> None:
 
     if csv_path.exists():
         size = csv_path.stat().st_size
-        print(f"Dataset already exists at {csv_path} ({size / 1_048_576:.1f} MB) — skipping download.")
+        print(
+            f"Dataset already exists at {csv_path} ({size / 1_048_576:.1f} MB) — skipping download."
+        )
         return
 
     print("Downloading mlg-ulb/creditcardfraud from Kaggle (~66 MB)...")

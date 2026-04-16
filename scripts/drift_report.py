@@ -32,7 +32,10 @@ def load_reference() -> pd.DataFrame:
     path = Path(REFERENCE_PATH)
     if not path.exists():
         print(f"ERROR: reference data not found at {path}", file=sys.stderr)
-        print("Run the Airflow ingestion DAG (or make download-data) first.", file=sys.stderr)
+        print(
+            "Run the Airflow ingestion DAG (or make download-data) first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     df = pd.read_parquet(path)
     df = df.drop(columns=["Class"], errors="ignore")

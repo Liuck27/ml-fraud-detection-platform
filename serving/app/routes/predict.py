@@ -9,7 +9,12 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException
 
 from serving.app.config import get_settings
-from serving.app.metrics import AB_ASSIGNMENTS, INFERENCE_ERRORS, INFERENCE_LATENCY, INFERENCE_TOTAL
+from serving.app.metrics import (
+    AB_ASSIGNMENTS,
+    INFERENCE_ERRORS,
+    INFERENCE_LATENCY,
+    INFERENCE_TOTAL,
+)
 from serving.app.models.ab_testing import route_to_challenger
 from serving.app.models.explainer import get_explainer
 from serving.app.models.loader import ModelRegistry, get_registry
@@ -33,9 +38,7 @@ def _shap_explanation(registry: ModelRegistry, df: pd.DataFrame) -> Explanation:
         return Explanation(top_features=[])
     X_scaled = registry._xgb_scaler.transform(df.values)
     contributions = explainer.explain(X_scaled)
-    return Explanation(
-        top_features=[FeatureContribution(**c) for c in contributions]
-    )
+    return Explanation(top_features=[FeatureContribution(**c) for c in contributions])
 
 
 def _select_model(
@@ -65,7 +68,9 @@ def predict(request: TransactionRequest) -> PredictionResponse:
     use_challenger = _select_model(
         request.transaction_id, registry, settings.ab_challenger_fraction
     )
-    AB_ASSIGNMENTS.labels(model_variant="challenger" if use_challenger else "champion").inc()
+    AB_ASSIGNMENTS.labels(
+        model_variant="challenger" if use_challenger else "champion"
+    ).inc()
 
     t0 = time.perf_counter()
     df = registry.prepare_features(request.features)
@@ -82,12 +87,16 @@ def predict(request: TransactionRequest) -> PredictionResponse:
             model_version = registry._xgb_version
             explanation = _shap_explanation(registry, df)
     except Exception:
-        INFERENCE_ERRORS.labels(model_name="challenger" if use_challenger else "champion").inc()
+        INFERENCE_ERRORS.labels(
+            model_name="challenger" if use_challenger else "champion"
+        ).inc()
         raise
 
     latency_ms = (time.perf_counter() - t0) * 1000
     INFERENCE_LATENCY.labels(model_name=model_name).observe(latency_ms / 1000)
-    INFERENCE_TOTAL.labels(model_name=model_name, prediction="fraud" if is_fraud else "legit").inc()
+    INFERENCE_TOTAL.labels(
+        model_name=model_name, prediction="fraud" if is_fraud else "legit"
+    ).inc()
 
     return PredictionResponse(
         transaction_id=request.transaction_id,
@@ -117,7 +126,9 @@ def predict_batch(request: BatchRequest) -> BatchResponse:
         use_challenger = _select_model(
             txn.transaction_id, registry, settings.ab_challenger_fraction
         )
-        AB_ASSIGNMENTS.labels(model_variant="challenger" if use_challenger else "champion").inc()
+        AB_ASSIGNMENTS.labels(
+            model_variant="challenger" if use_challenger else "champion"
+        ).inc()
 
         t0 = time.perf_counter()
         df = registry.prepare_features(txn.features)
@@ -132,12 +143,16 @@ def predict_batch(request: BatchRequest) -> BatchResponse:
                 model_name = f"{registry._xgb_name}-{registry._champion_alias}"
                 model_version = registry._xgb_version
         except Exception:
-            INFERENCE_ERRORS.labels(model_name="challenger" if use_challenger else "champion").inc()
+            INFERENCE_ERRORS.labels(
+                model_name="challenger" if use_challenger else "champion"
+            ).inc()
             raise
 
         latency_ms = (time.perf_counter() - t0) * 1000
         INFERENCE_LATENCY.labels(model_name=model_name).observe(latency_ms / 1000)
-        INFERENCE_TOTAL.labels(model_name=model_name, prediction="fraud" if is_fraud else "legit").inc()
+        INFERENCE_TOTAL.labels(
+            model_name=model_name, prediction="fraud" if is_fraud else "legit"
+        ).inc()
 
         predictions.append(
             BatchPredictionItem(

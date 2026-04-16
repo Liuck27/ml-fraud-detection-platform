@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,9 @@ class TransactionRequest(BaseModel):
 
 
 class BatchRequest(BaseModel):
-    transactions: Annotated[list[TransactionRequest], Field(min_length=1, max_length=1000)]
+    transactions: Annotated[
+        list[TransactionRequest], Field(min_length=1, max_length=1000)
+    ]
 
 
 # ---------------------------------------------------------------------------

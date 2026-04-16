@@ -15,6 +15,7 @@ Requires MLFLOW_TRACKING_URI env var (defaults to http://localhost:5000).
 
 from __future__ import annotations
 
+# ruff: noqa: E402  (sys.path.insert before sibling imports is intentional)
 import os
 import pickle
 import sys
@@ -34,7 +35,12 @@ import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-from evaluate import compute_metrics, find_optimal_threshold, plot_pr_curve, plot_roc_curve
+from evaluate import (
+    compute_metrics,
+    find_optimal_threshold,
+    plot_pr_curve,
+    plot_roc_curve,
+)
 from model_registry import promote_to_challenger
 
 # ---------------------------------------------------------------------------
@@ -44,10 +50,13 @@ from model_registry import promote_to_challenger
 REPO_ROOT = Path(__file__).parent.parent
 PARQUET_PATH = REPO_ROOT / "data" / "processed" / "features.parquet"
 
-FEATURE_COLS: list[str] = (
-    [f"V{i}" for i in range(1, 29)]
-    + ["amount_log", "amount_zscore", "hour_of_day", "is_night", "v1_v2_interaction"]
-)
+FEATURE_COLS: list[str] = [f"V{i}" for i in range(1, 29)] + [
+    "amount_log",
+    "amount_zscore",
+    "hour_of_day",
+    "is_night",
+    "v1_v2_interaction",
+]
 TARGET_COL = "Class"
 
 MODEL_NAME = os.getenv("MODEL_AUTOENCODER_NAME", "fraud-autoencoder")
@@ -154,9 +163,7 @@ def train_autoencoder(
     model = FraudAutoencoder(input_dim=input_dim, hidden_dims=HIDDEN_DIMS)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.MSELoss()
-    dataset = torch.utils.data.TensorDataset(
-        torch.tensor(X_train, dtype=torch.float32)
-    )
+    dataset = torch.utils.data.TensorDataset(torch.tensor(X_train, dtype=torch.float32))
     loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     model.train()
@@ -245,22 +252,23 @@ def main() -> None:
         mlflow.log_metrics(metrics)
 
         # Log evaluation plots
-        roc_fig = plot_roc_curve(
-            y_val.values, scores, title="Autoencoder ROC Curve"
-        )
-        pr_fig = plot_pr_curve(
-            y_val.values, scores, title="Autoencoder PR Curve"
-        )
+        roc_fig = plot_roc_curve(y_val.values, scores, title="Autoencoder ROC Curve")
+        pr_fig = plot_pr_curve(y_val.values, scores, title="Autoencoder PR Curve")
         mlflow.log_figure(roc_fig, "roc_curve.png")
         mlflow.log_figure(pr_fig, "pr_curve.png")
         import matplotlib.pyplot as plt
+
         plt.close("all")
 
-        # Persist artifacts to a temp dir for the pyfunc log_model call
+        # Persist artifacts to a temp dir for the pyfunc log_model call.
+        # Use Path.as_posix() so MLflow records forward-slash paths in MLmodel —
+        # without this, os.path.join on Windows embeds backslashes that break
+        # loading inside the Linux serving container.
         with tempfile.TemporaryDirectory() as tmpdir:
-            ts_path = os.path.join(tmpdir, "model.pt")
-            scaler_path = os.path.join(tmpdir, "scaler.pkl")
-            threshold_path = os.path.join(tmpdir, "threshold.txt")
+            tmp = Path(tmpdir)
+            ts_path = (tmp / "model.pt").as_posix()
+            scaler_path = (tmp / "scaler.pkl").as_posix()
+            threshold_path = (tmp / "threshold.txt").as_posix()
 
             scripted = torch.jit.script(model)
             torch.jit.save(scripted, ts_path)

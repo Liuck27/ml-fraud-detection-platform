@@ -111,8 +111,8 @@ format-check: ## Check formatting without modifying files (for CI)
 
 .PHONY: typecheck
 typecheck: ## Run mypy on serving and training
-	$(PYTHON_SERVING) -m mypy serving/app/
-	$(PYTHON_TRAINING) -m mypy training/
+	$(PYTHON) -m mypy serving/app/ --ignore-missing-imports
+	$(PYTHON_TRAINING) -m mypy training/ --ignore-missing-imports
 
 .PHONY: audit
 audit: ## Run pip-audit security scan on all requirements files

@@ -13,6 +13,7 @@ Requires MLFLOW_TRACKING_URI env var (defaults to http://localhost:5000).
 
 from __future__ import annotations
 
+# ruff: noqa: E402  (sys.path.insert before sibling imports is intentional)
 import os
 import pickle
 import sys
@@ -32,7 +33,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
-from evaluate import compute_metrics, find_optimal_threshold, plot_pr_curve, plot_roc_curve
+from evaluate import (
+    compute_metrics,
+    find_optimal_threshold,
+    plot_pr_curve,
+    plot_roc_curve,
+)
 from model_registry import promote_to_champion
 
 # ---------------------------------------------------------------------------
@@ -45,10 +51,13 @@ PARQUET_PATH = REPO_ROOT / "data" / "processed" / "features.parquet"
 # V1–V28 (original PCA features) + 5 engineered features.
 # Raw Amount and Time are excluded: amount is encoded by amount_log/amount_zscore;
 # Time is encoded by hour_of_day/is_night.
-FEATURE_COLS: list[str] = (
-    [f"V{i}" for i in range(1, 29)]
-    + ["amount_log", "amount_zscore", "hour_of_day", "is_night", "v1_v2_interaction"]
-)
+FEATURE_COLS: list[str] = [f"V{i}" for i in range(1, 29)] + [
+    "amount_log",
+    "amount_zscore",
+    "hour_of_day",
+    "is_night",
+    "v1_v2_interaction",
+]
 TARGET_COL = "Class"
 
 MODEL_NAME = os.getenv("MODEL_XGBOOST_NAME", "fraud-xgboost")
@@ -139,6 +148,7 @@ def main() -> None:
         mlflow.log_figure(roc_fig, "roc_curve.png")
         mlflow.log_figure(pr_fig, "pr_curve.png")
         import matplotlib.pyplot as plt
+
         plt.close("all")
 
         # Log the fitted StandardScaler so the serving layer can reproduce the
@@ -150,7 +160,7 @@ def main() -> None:
             mlflow.log_artifact(str(scaler_path), artifact_path="scaler")
 
         # Register model
-        model_info = mlflow.xgboost.log_model(
+        mlflow.xgboost.log_model(
             model,
             artifact_path="model",
             registered_model_name=MODEL_NAME,

@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import pickle
 import tempfile
-from pathlib import Path
 from typing import Any
 
 import mlflow
@@ -30,10 +29,13 @@ from serving.app.schemas import TransactionFeatures
 logger = logging.getLogger(__name__)
 
 # Feature column order must match training/train_xgboost.py exactly.
-FEATURE_COLS: list[str] = (
-    [f"V{i}" for i in range(1, 29)]
-    + ["amount_log", "amount_zscore", "hour_of_day", "is_night", "v1_v2_interaction"]
-)
+FEATURE_COLS: list[str] = [f"V{i}" for i in range(1, 29)] + [
+    "amount_log",
+    "amount_zscore",
+    "hour_of_day",
+    "is_night",
+    "v1_v2_interaction",
+]
 
 
 class ModelRegistry:
@@ -78,7 +80,9 @@ class ModelRegistry:
 
     def _load_xgboost(self, client: MlflowClient, settings: Settings) -> None:
         try:
-            uri = f"models:/{settings.model_xgboost_name}@{settings.model_champion_alias}"
+            uri = (
+                f"models:/{settings.model_xgboost_name}@{settings.model_champion_alias}"
+            )
             self._xgb_model = mlflow.xgboost.load_model(uri)
 
             # Retrieve run id so we can fetch the scaler artifact and metrics
@@ -103,9 +107,15 @@ class ModelRegistry:
                 if k in run_data.metrics
             }
 
-            logger.info("XGBoost champion v%s loaded (threshold=%.4f)", self._xgb_version, self._xgb_threshold)
+            logger.info(
+                "XGBoost champion v%s loaded (threshold=%.4f)",
+                self._xgb_version,
+                self._xgb_threshold,
+            )
         except Exception:
-            logger.exception("Failed to load XGBoost champion — API will start degraded")
+            logger.exception(
+                "Failed to load XGBoost champion — API will start degraded"
+            )
 
     def _load_autoencoder(self, client: MlflowClient, settings: Settings) -> None:
         try:
@@ -125,7 +135,9 @@ class ModelRegistry:
 
             logger.info("Autoencoder challenger v%s loaded", self._ae_version)
         except Exception:
-            logger.exception("Failed to load Autoencoder challenger — API will start degraded")
+            logger.exception(
+                "Failed to load Autoencoder challenger — API will start degraded"
+            )
 
     # ------------------------------------------------------------------
     # Feature engineering
@@ -157,7 +169,9 @@ class ModelRegistry:
 
         return pd.DataFrame([row])[FEATURE_COLS]
 
-    def prepare_features_batch(self, features_list: list[TransactionFeatures]) -> pd.DataFrame:
+    def prepare_features_batch(
+        self, features_list: list[TransactionFeatures]
+    ) -> pd.DataFrame:
         """Prepare a batch of transactions, computing batch-level amount_zscore."""
         rows = []
         for features in features_list:

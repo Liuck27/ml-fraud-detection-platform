@@ -22,7 +22,9 @@ class SHAPExplainer:
         self._explainer = shap.TreeExplainer(model)
         self._feature_names = feature_names
 
-    def explain(self, X_scaled: np.ndarray, top_k: int = 3) -> list[dict[str, float | str]]:
+    def explain(
+        self, X_scaled: np.ndarray, top_k: int = 3
+    ) -> list[dict[str, float | str]]:
         """Return top-k feature contributions for a single (1-row) scaled array.
 
         Returns a list of dicts with keys 'feature' and 'contribution', sorted

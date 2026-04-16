@@ -68,11 +68,14 @@ def engineer_and_write(**_: object) -> None:
     DATA_PROCESSED.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(DATA_PROCESSED, index=False)
 
-    new_cols = ["amount_log", "amount_zscore", "hour_of_day", "is_night", "v1_v2_interaction"]
-    print(
-        f"Wrote {len(df):,} rows to {DATA_PROCESSED}. "
-        f"New features: {new_cols}"
-    )
+    new_cols = [
+        "amount_log",
+        "amount_zscore",
+        "hour_of_day",
+        "is_night",
+        "v1_v2_interaction",
+    ]
+    print(f"Wrote {len(df):,} rows to {DATA_PROCESSED}. " f"New features: {new_cols}")
 
 
 with DAG(
