@@ -5,6 +5,9 @@
 End-to-end fraud detection with MLOps best practices: imbalanced data handling,
 experiment tracking, A/B model testing, explainable predictions, and drift monitoring.
 
+> **New here?** Read the [project wiki](docs/explanation/README.md) for an in-depth,
+> file-by-file explanation of every component.
+
 ---
 
 ## The Problem
@@ -75,6 +78,8 @@ flowchart TD
 ## Quick Start
 
 **Prerequisites:** Docker Desktop, Python 3.11, Git Bash or WSL2 (Windows), Kaggle account.
+
+> **Local-only defaults.** This stack is intended to run on localhost. The Airflow admin user is seeded as `admin:admin` in `docker-compose.yml`, and `.env.example` ships `change_me_*` placeholders for Postgres, Airflow, and Grafana. Rotate all of these before exposing any port beyond your machine.
 
 ```bash
 # 1. Clone and configure
