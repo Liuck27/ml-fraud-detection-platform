@@ -8,11 +8,17 @@ challenger returns an empty explanation list.
 from __future__ import annotations
 
 import logging
+from typing import TypedDict
 
 import numpy as np
 import shap
 
 logger = logging.getLogger(__name__)
+
+
+class ContributionDict(TypedDict):
+    feature: str
+    contribution: float
 
 
 class SHAPExplainer:
@@ -22,9 +28,7 @@ class SHAPExplainer:
         self._explainer = shap.TreeExplainer(model)
         self._feature_names = feature_names
 
-    def explain(
-        self, X_scaled: np.ndarray, top_k: int = 3
-    ) -> list[dict[str, float | str]]:
+    def explain(self, X_scaled: np.ndarray, top_k: int = 3) -> list[ContributionDict]:
         """Return top-k feature contributions for a single (1-row) scaled array.
 
         Returns a list of dicts with keys 'feature' and 'contribution', sorted
