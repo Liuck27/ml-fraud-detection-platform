@@ -1,0 +1,12 @@
+# Airflow — most constrained environment, kept isolated from other services.
+# Requires SQLAlchemy<2, which conflicts with PyTorch/scikit-learn — this is why
+# Airflow gets its own venv.
+# Note: installation is slow (~5–10 min) due to Airflow's large dependency graph.
+
+apache-airflow==2.7.3
+apache-airflow-providers-postgres==5.7.1
+apache-airflow-providers-common-sql==1.8.1
+psycopg2-binary==2.9.9
+pandas==2.1.4
+numpy==1.26.3
+pyarrow==14.0.2

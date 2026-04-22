@@ -1,0 +1,232 @@
+# =============================================================================
+# ML Fraud Detection Platform — Docker Compose
+#
+# Phase 1: PostgreSQL only (active).
+# Future services are present as commented stubs — uncomment in the phase noted.
+# =============================================================================
+
+# Shared config block for all three Airflow containers (Phase 3).
+x-airflow-common: &airflow-common
+  build:
+    context: ./airflow
+    dockerfile: Dockerfile
+  env_file: .env
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./data:/opt/airflow/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks:
+    - fraud-net
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    container_name: fraud_postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - fraud-net
+
+  # ── MLflow ─────────────────────────────────────────────────────────────────
+  # Phase 3: experiment tracking + model registry.
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    container_name: fraud_mlflow
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - mlflow_artifacts:/app/mlartifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      mlflow server
+      --backend-store-uri ${MLFLOW_BACKEND_STORE_URI}
+      --default-artifact-root ${MLFLOW_ARTIFACT_ROOT}
+      --serve-artifacts
+      --host 0.0.0.0
+      --port 5000
+    networks:
+      - fraud-net
+
+  # ── Airflow ─────────────────────────────────────────────────────────────────
+  # Phase 2: Airflow init, webserver, and scheduler.
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: fraud_airflow_init
+    command: ["bash", "-c", "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true"]
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: fraud_airflow_webserver
+    command: webserver
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: fraud_airflow_scheduler
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ── Zookeeper ───────────────────────────────────────────────────────────────
+  # Uncomment in Phase 8.
+  # zookeeper:
+  #   image: confluentinc/cp-zookeeper:${CONFLUENT_VERSION:-7.5.0}
+  #   container_name: fraud_zookeeper
+  #   restart: unless-stopped
+  #   environment:
+  #     ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_CLIENT_PORT:-2181}
+  #     ZOOKEEPER_TICK_TIME: ${ZOOKEEPER_TICK_TIME:-2000}
+  #   networks:
+  #     - fraud-net
+
+  # ── Kafka ────────────────────────────────────────────────────────────────────
+  # Uncomment in Phase 8.
+  # kafka:
+  #   image: confluentinc/cp-kafka:${CONFLUENT_VERSION:-7.5.0}
+  #   container_name: fraud_kafka
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - zookeeper
+  #   ports:
+  #     - "9092:9092"
+  #   environment:
+  #     KAFKA_BROKER_ID: 1
+  #     KAFKA_ZOOKEEPER_CONNECT: zookeeper:${ZOOKEEPER_CLIENT_PORT:-2181}
+  #     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+  #     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+  #     KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+  #   networks:
+  #     - fraud-net
+
+  # ── Kafka Producer ───────────────────────────────────────────────────────────
+  # Uncomment in Phase 8.
+  # kafka-producer:
+  #   build:
+  #     context: ./streaming/producer
+  #     dockerfile: Dockerfile
+  #   container_name: fraud_kafka_producer
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   volumes:
+  #     - ./data:/app/data
+  #   depends_on:
+  #     - kafka
+  #   networks:
+  #     - fraud-net
+
+  # ── Go Consumer ──────────────────────────────────────────────────────────────
+  # Uncomment in Phase 8.
+  # go-consumer:
+  #   build:
+  #     context: ./streaming/consumer
+  #     dockerfile: Dockerfile
+  #   container_name: fraud_go_consumer
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   ports:
+  #     - "${GO_CONSUMER_HEALTH_PORT:-8081}:8081"
+  #   depends_on:
+  #     - kafka
+  #     - serving
+  #   networks:
+  #     - fraud-net
+
+  # ── FastAPI Serving ──────────────────────────────────────────────────────────
+  serving:
+    build:
+      context: ./serving
+      dockerfile: Dockerfile
+    container_name: fraud_serving
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${SERVING_PORT:-8000}:8000"
+    volumes:
+      - mlflow_artifacts:/app/mlartifacts  # shared with mlflow — required for local artifact loading
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    networks:
+      - fraud-net
+
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+  # Phase 5: Metrics collection — scrapes FastAPI /metrics endpoint.
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: fraud_prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerting/rules.yml:/etc/prometheus/rules.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_DAYS:-15}d
+    networks:
+      - fraud-net
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  # Phase 5: Dashboards — auto-provisioned from monitoring/grafana/provisioning/.
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: fraud_grafana
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - fraud-net
+
+networks:
+  fraud-net:
+    name: fraud-detection-net
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: fraud_postgres_data
+  mlflow_artifacts:
+    name: fraud_mlflow_artifacts

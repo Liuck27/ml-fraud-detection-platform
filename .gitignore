@@ -1,0 +1,66 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyo
+
+# Virtual environments — all .venv directories anywhere in the tree
+**/.venv/
+**/venv/
+**/env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── ML Artifacts ──────────────────────────────────────────────────────────────
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.onnx
+*.ts
+mlruns/
+mlartifacts/
+
+# ── Data files ────────────────────────────────────────────────────────────────
+data/raw/*
+data/processed/*
+data/reports/*
+*.csv
+*.parquet
+*.feather
+*.arrow
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/reports/.gitkeep
+
+# ── Secrets & environment ─────────────────────────────────────────────────────
+.env
+!.env.example
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/
+project_example.txt
+CLAUDE.md
