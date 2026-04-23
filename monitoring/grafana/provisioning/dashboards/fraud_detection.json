@@ -40,7 +40,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus-local" },
       "targets": [
         {
-          "expr": "100 * rate(inference_total{prediction=\"fraud\"}[5m]) / rate(inference_total[5m])",
+          "expr": "100 * sum(rate(inference_total{prediction=\"fraud\"}[5m])) / sum(rate(inference_total[5m]))",
           "legendFormat": "Fraud %",
           "refId": "A"
         }
