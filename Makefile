@@ -166,6 +166,10 @@ up-monitoring: ## Start Prometheus + Grafana (Phase 5)
 download-data: ## Download Kaggle fraud dataset (set KAGGLE_USERNAME + KAGGLE_KEY in .env)
 	$(PYTHON) scripts/download_data.py
 
+.PHONY: generate-drift-data
+generate-drift-data: ## Generate synthetic current.parquet with realistic drift (prerequisite for drift-report)
+	$(PYTHON_EVIDENTLY) scripts/generate_drift_data.py
+
 .PHONY: drift-report
 drift-report: ## Generate Evidently drift report → data/reports/drift_report.html
 	$(PYTHON_EVIDENTLY) scripts/drift_report.py

@@ -207,16 +207,34 @@ make venv-airflow   # Airflow (slow — ~10 min)
 make venv-evidently # Evidently drift reporting
 ```
 
+### Utility scripts
+
+```bash
+# Populate Grafana with realistic traffic — sends N requests at a controlled rate
+# so Prometheus has enough scrape intervals for rate() queries to be non-NaN.
+# Prints a formatted /predict response after the first request (screenshot that).
+python scripts/populate_metrics.py --n 1200 --fraud-rate 0.01 --delay 0.5
+
+# Generate synthetic serving data with realistic feature drift, then produce the report.
+# Simulates several months of production: Amount inflation, V1/V4/V17 distribution shift.
+make generate-drift-data
+make drift-report   # → data/reports/drift_report.html
+```
+
 ### Screenshots
 
-_Grafana dashboard (request rate, fraud rate, p99 latency, A/B split):_
-> Add screenshot here after running `docker compose up -d && make train`
+_MLflow experiment runs — XGBoost PR-AUC and ROC-AUC side by side:_
 
-_MLflow experiment comparison (XGBoost runs with logged metrics):_
-> Add screenshot here after `bash scripts/run_training.sh`
+![MLflow experiment runs](docs/screenshots/mlflow.png)
 
-_SHAP explanation output (top feature contributions per prediction):_
-> Add screenshot here after calling `POST /predict`
+_Grafana dashboard — request rate, fraud rate %, p99 latency, A/B model split:_
 
-_Airflow DAG graph view (data_ingestion and retrain DAGs):_
-> Add screenshot here from http://localhost:8080
+![Grafana dashboard](docs/screenshots/grafana.png)
+
+_FastAPI Swagger UI — /predict endpoint with live response (fraud probability, model version, SHAP contributions):_
+
+![FastAPI Swagger UI](docs/screenshots/fastapi.png)
+
+_Evidently drift report — feature distribution shift between training and serving data:_
+
+![Evidently drift report](docs/screenshots/drift_report.png)
