@@ -12,9 +12,9 @@ experiment tracking, A/B model testing, explainable predictions, and drift monit
 
 ## The Problem
 
-- **Imbalanced data** — fraud is 0.17% of transactions. Accuracy is meaningless; a model that always predicts "not fraud" gets 99.8% accuracy.
-- **Cost-sensitive decisions** — a missed fraud (false negative) costs real money; a false alarm (false positive) frustrates customers. The right threshold depends on business context.
-- **Evolving patterns** — fraud patterns shift over time. Models need monitoring and retraining when data distributions drift.
+- **Imbalanced data**, fraud is 0.17% of transactions. Accuracy is meaningless; a model that always predicts "not fraud" gets 99.8% accuracy.
+- **Cost-sensitive decisions**, a missed fraud (false negative) costs real money; a false alarm (false positive) frustrates customers. The right threshold depends on business context.
+- **Evolving patterns**, fraud patterns shift over time. Models need monitoring and retraining when data distributions drift.
 
 ---
 
@@ -86,7 +86,7 @@ flowchart TD
 git clone https://github.com/Liuck27/ml-fraud-detection-platform.git
 cd ml-fraud-detection-platform
 cp .env.example .env
-# Edit .env — fill in KAGGLE_USERNAME + KAGGLE_KEY + generate AIRFLOW__CORE__FERNET_KEY
+# Edit .env, fill in KAGGLE_USERNAME + KAGGLE_KEY + generate AIRFLOW__CORE__FERNET_KEY
 
 # 2. Download the dataset (~144 MB)
 make venv && make download-data
@@ -102,7 +102,7 @@ docker compose up -d
 # 5. Train both models
 make venv-training
 bash scripts/run_training.sh
-# MLflow UI → http://localhost:5000 — experiments and registered models appear here
+# MLflow UI → http://localhost:5000, experiments and registered models appear here
 
 # 6. Make your first prediction
 curl -s -X POST http://localhost:8000/predict \
@@ -126,12 +126,12 @@ curl -s -X POST http://localhost:8000/predict \
 
 ## Key Features
 
-- **Imbalanced data handling** — SMOTE oversampling + `scale_pos_weight` in XGBoost; evaluation on PR-AUC (more honest than ROC-AUC on 0.17% fraud rate)
-- **Two model approaches** — XGBoost (supervised, gradient boosted trees) and PyTorch Autoencoder (unsupervised anomaly detection trained on legit transactions only)
-- **A/B testing** — deterministic hash routing (`hash(transaction_id) % 100`) so the same transaction always routes to the same model; split ratio configurable via env var
-- **Explainability** — every `/predict` response includes top SHAP feature contributions explaining why the transaction was or wasn't flagged
-- **Drift detection** — Evidently `DataDriftPreset` comparing training vs. serving distributions; run `make drift-report` to generate an HTML report
-- **Monitoring** — Grafana dashboards for request rate, fraud rate %, p99 latency, and A/B traffic split; Prometheus alerting rules for anomalous conditions
+- **Imbalanced data handling**, SMOTE oversampling + `scale_pos_weight` in XGBoost; evaluation on PR-AUC (more honest than ROC-AUC on 0.17% fraud rate)
+- **Two model approaches**, XGBoost (supervised, gradient boosted trees) and PyTorch Autoencoder (unsupervised anomaly detection trained on legit transactions only)
+- **A/B testing**, deterministic hash routing (`hash(transaction_id) % 100`) so the same transaction always routes to the same model; split ratio configurable via env var
+- **Explainability**, every `/predict` response includes top SHAP feature contributions explaining why the transaction was or wasn't flagged
+- **Drift detection**, Evidently `DataDriftPreset` comparing training vs. serving distributions; run `make drift-report` to generate an HTML report
+- **Monitoring**, Grafana dashboards for request rate, fraud rate %, p99 latency, and A/B traffic split; Prometheus alerting rules for anomalous conditions
 
 ---
 
@@ -165,18 +165,18 @@ Health check with loaded model status, model registry info, and Prometheus metri
 | Decision | Rationale |
 |----------|-----------|
 | **Airflow for orchestration** | Multi-step DAGs (ingest → features → train → register) benefit from dependency management, retries, and a UI to inspect failures |
-| **Two model types** | XGBoost is the practical choice for tabular fraud detection. The autoencoder shows a different paradigm — unsupervised anomaly detection that doesn't need fraud labels |
+| **Two model types** | XGBoost is the practical choice for tabular fraud detection. The autoencoder shows a different paradigm, unsupervised anomaly detection that doesn't need fraud labels |
 | **SHAP explanations** | In fraud detection, "why was this flagged?" matters for compliance and customer trust. SHAP is the industry standard |
 | **PR-AUC alongside ROC-AUC** | On datasets this imbalanced, ROC-AUC can look great even when the model is mediocre. PR-AUC tells a more honest story |
-| **Evidently as a standalone script** | Drift detection is important to demonstrate awareness of, but integrating a full drift pipeline into Airflow would be overkill here |
+| **Evidently as a standalone script** | Drift detection is worth surfacing, but integrating a full drift pipeline into Airflow would be overkill here |
 
 ### What's deliberately out of scope
 
 | Omitted | Why |
 |---------|-----|
 | **Kafka / streaming** | Would add 3+ containers for a synthetic demo stream. The ML signal-to-noise ratio drops significantly |
-| **Feast feature store** | The dataset is a single static CSV — a feature store solves training-serving skew across multiple data sources, a problem that doesn't exist here |
-| **Kubernetes** | Single-node Docker Compose is honest for a local portfolio project. K8s would add YAML complexity without demonstrating anything the project needs |
+| **Feast feature store** | The dataset is a single static CSV, a feature store solves training-serving skew across multiple data sources, a problem that doesn't exist here |
+| **Kubernetes** | Single-node Docker Compose is honest for the actual scale. K8s would add YAML complexity without adding anything the project needs |
 | **Isolation Forest** | Three models is one too many. XGBoost + Autoencoder already covers supervised + unsupervised. A third model adds diminishing returns |
 
 ---
@@ -197,20 +197,20 @@ make test-integration  # integration tests (requires docker compose up)
 
 ### Virtual environments
 
-Each service has an isolated venv — never mix them:
+Each service has an isolated venv, never mix them:
 
 ```bash
 make venv           # root dev tools (lint, format, CI)
 make venv-training  # ML training dependencies
 make venv-serving   # FastAPI serving dependencies
-make venv-airflow   # Airflow (slow — ~10 min)
+make venv-airflow   # Airflow (slow, ~10 min)
 make venv-evidently # Evidently drift reporting
 ```
 
 ### Utility scripts
 
 ```bash
-# Populate Grafana with realistic traffic — sends N requests at a controlled rate
+# Populate Grafana with realistic traffic, sends N requests at a controlled rate
 # so Prometheus has enough scrape intervals for rate() queries to be non-NaN.
 # Prints a formatted /predict response after the first request (screenshot that).
 python scripts/populate_metrics.py --n 1200 --fraud-rate 0.01 --delay 0.5
@@ -223,18 +223,18 @@ make drift-report   # → data/reports/drift_report.html
 
 ### Screenshots
 
-_MLflow experiment runs — XGBoost PR-AUC and ROC-AUC side by side:_
+_MLflow experiment runs, XGBoost PR-AUC and ROC-AUC side by side:_
 
 ![MLflow experiment runs](docs/screenshots/mlflow.png)
 
-_Grafana dashboard — request rate, fraud rate %, p99 latency, A/B model split:_
+_Grafana dashboard, request rate, fraud rate %, p99 latency, A/B model split:_
 
 ![Grafana dashboard](docs/screenshots/grafana.png)
 
-_FastAPI Swagger UI — /predict endpoint with live response (fraud probability, model version, SHAP contributions):_
+_FastAPI Swagger UI, /predict endpoint with live response (fraud probability, model version, SHAP contributions):_
 
 ![FastAPI Swagger UI](docs/screenshots/fastapi.png)
 
-_Evidently drift report — feature distribution shift between training and serving data:_
+_Evidently drift report, feature distribution shift between training and serving data:_
 
 ![Evidently drift report](docs/screenshots/drift_report.png)

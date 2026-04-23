@@ -1,10 +1,10 @@
-# 05 — Training
+# 05, Training
 
 > **What this page answers:** How two very different models are trained on
 > the same Parquet file, why MLflow is the bookkeeping layer, and how the
 > champion/challenger aliases decide what the API serves.
 
-You should read [02 — ML concepts § SMOTE](02-ml-concepts.md#smote), [§
+You should read [02, ML concepts § SMOTE](02-ml-concepts.md#smote), [§
 Autoencoders](02-ml-concepts.md#autoencoders-for-anomaly-detection), and
 [§ MLflow vocabulary](02-ml-concepts.md#mlflow-vocabulary) before or
 alongside this page.
@@ -19,7 +19,7 @@ task:
 | **XGBoost** | Supervised, gradient-boosted trees | Yes | Only patterns like training data | Yes (SHAP) |
 | **Autoencoder** | Unsupervised anomaly detection | Only legit at training | Yes, by definition | Not directly |
 
-Supervised models dominate where you have labels — they get calibrated
+Supervised models dominate where you have labels, they get calibrated
 probabilities and clean SHAP explanations. But their blind spot is
 *new* fraud patterns: a model trained on last year's fraud signatures
 will miss this year's novel attack. An autoencoder trained only on
@@ -27,10 +27,11 @@ legitimate transactions flags *anything unusual*, novel or not, at the
 cost of harder-to-explain scores and lower precision.
 
 Running both gives you [A/B testing](02-ml-concepts.md#a-b-testing-in-ml-serving)
-and lets you compare them on real traffic. The setup also demonstrates
-two paradigms in one repo, which is the portfolio story.
+and a way to compare them on real traffic. Two paradigms in one repo
+also illustrates that supervised and anomaly-detection approaches are
+complementary.
 
-## XGBoost — `training/train_xgboost.py`
+## XGBoost, `training/train_xgboost.py`
 
 Entry point: `training/train_xgboost.py:102` (`main`).
 
@@ -45,14 +46,14 @@ FEATURE_COLS = [f"V{i}" for i in range(1, 29)] + [
 ]
 ```
 
-Raw `Amount` and `Time` are intentionally excluded — `amount_log` /
+Raw `Amount` and `Time` are intentionally excluded, `amount_log` /
 `amount_zscore` and `hour_of_day` / `is_night` encode them in better
 forms (see [04 § Feature engineering](04-data-and-features.md#feature-engineering)).
 This list must match the serving loader's `FEATURE_COLS` exactly
-(`serving/app/models/loader.py:32-38`) — if they drift apart,
+(`serving/app/models/loader.py:32-38`), if they drift apart,
 training-serving skew breaks predictions silently.
 
-### Data split — `train_xgboost.py:108-110`
+### Data split, `train_xgboost.py:108-110`
 
 ```python
 X_train_df, X_val_df, y_train, y_val = train_test_split(
@@ -66,9 +67,9 @@ X_train_df, X_val_df, y_train, y_val = train_test_split(
   increases monotonically), so a random split leaks future-into-past
   information. In production you'd split by time (train on days 1-N,
   validate on day N+1). Flagged as a known honest limitation in
-  [10 — Limitations](10-limitations-and-extensions.md).
+  [10, Limitations](10-limitations-and-extensions.md).
 
-### Scaling — `train_xgboost.py:113-115`
+### Scaling, `train_xgboost.py:113-115`
 
 `StandardScaler` fit on the training split only, then used to transform
 both splits. The fitted scaler is pickled and logged as an MLflow
@@ -77,7 +78,7 @@ same scaling** at inference time, not fit a new scaler on serving data.
 This is the standard way to avoid training-serving skew on feature
 scaling.
 
-### SMOTE — `train_xgboost.py:118-123`
+### SMOTE, `train_xgboost.py:118-123`
 
 ```python
 smote = SMOTE(random_state=42)
@@ -88,10 +89,10 @@ SMOTE synthesizes new minority-class samples until the classes are
 balanced. See [02 § SMOTE](02-ml-concepts.md#smote) for how it works.
 
 After SMOTE, the training set typically goes from ~227k legit vs ~394
-fraud to ~227k vs ~227k. The validation set is **never** SMOTE'd —
+fraud to ~227k vs ~227k. The validation set is **never** SMOTE'd,
 that would make metrics meaningless.
 
-### Model config — `train_xgboost.py:88-97`
+### Model config, `train_xgboost.py:88-97`
 
 ```python
 XGBClassifier(
@@ -104,7 +105,7 @@ XGBClassifier(
 )
 ```
 
-- **300 trees, depth 6, lr 0.05.** Standard tabular baseline — not
+- **300 trees, depth 6, lr 0.05.** Standard tabular baseline, not
   aggressively tuned. `n_estimators × learning_rate ~ 15` is the rough
   "how much total signal are we learning" knob.
 - **`scale_pos_weight`** is "belt and suspenders" with SMOTE (line 86
@@ -118,7 +119,7 @@ XGBClassifier(
 early stopping. All of those would be the next productivity
 investments if you were tuning seriously.
 
-### Threshold calibration — `evaluate.py:47-72` via `train_xgboost.py:129`
+### Threshold calibration, `evaluate.py:47-72` via `train_xgboost.py:129`
 
 ```python
 threshold = find_optimal_threshold(y_val.values, y_pred_proba)
@@ -146,14 +147,14 @@ Inside the `with mlflow.start_run()` block (`train_xgboost.py:125-168`):
 - **Parameters** (`log_params` at 133-142): `n_estimators`, `max_depth`,
   `learning_rate`, `smote`, `test_size`, `n_features`.
 - **Metrics** (`log_metrics` at 143): `auc_roc`, `pr_auc`, `f1`,
-  `precision`, `recall`, `threshold` — all from `compute_metrics`.
+  `precision`, `recall`, `threshold`, all from `compute_metrics`.
 - **Figures** (146-149): ROC curve PNG, PR curve PNG.
 - **Scaler** (156-160): `scaler.pkl` logged under `artifact_path="scaler"`.
 - **Model** (163-168): `mlflow.xgboost.log_model` registers under
   `registered_model_name="fraud-xgboost"` with an `input_example` so
   MLflow captures the signature.
 
-### Registry promotion — `train_xgboost.py:182-187`
+### Registry promotion, `train_xgboost.py:182-187`
 
 After the run closes, the newly registered version is promoted to
 `champion`:
@@ -169,23 +170,23 @@ thin wrapper that calls
 
 **Important:** the one-shot training script promotes *unconditionally*.
 The retrain DAG (`airflow/dags/retrain_dag.py:130-140`) does the same
-thing *conditionally* — only if the new version's PR-AUC beats the
+thing *conditionally*, only if the new version's PR-AUC beats the
 existing champion's. See [04 § The retrain DAG](04-data-and-features.md#the-retrain-dag).
 
 ### Target metric
 
 The "done" bar is **AUC-ROC > 0.95** (line 178-179 prints a warning
 otherwise). In practice the model clears ~0.97 comfortably on this
-dataset. PR-AUC is the more honest metric — typically around 0.85 on
+dataset. PR-AUC is the more honest metric, typically around 0.85 on
 the validation split.
 
-## Autoencoder — `training/train_autoencoder.py`
+## Autoencoder, `training/train_autoencoder.py`
 
 Entry point: `training/train_autoencoder.py:198` (`main`).
 
 Same input features (lines 53-59). Different training philosophy.
 
-### Architecture — `train_autoencoder.py:78-98`
+### Architecture, `train_autoencoder.py:78-98`
 
 ```
 Input(33) → 64 → 32 → 16 → 32 → 64 → Output(33)
@@ -194,10 +195,10 @@ Input(33) → 64 → 32 → 16 → 32 → 64 → Output(33)
 - Six `Linear` layers separated by ReLU, mirrored encoder/decoder.
 - Bottleneck is 16 units. The network can only use this compressed
   representation to reconstruct a 33-dim input, so it has to learn the
-  structure of *normal* transactions — no capacity for memorising
+  structure of *normal* transactions, no capacity for memorising
   outliers.
 
-### Trains only on legitimate data — `train_autoencoder.py:209-213`
+### Trains only on legitimate data, `train_autoencoder.py:209-213`
 
 ```python
 mask_legit = y_train == 0
@@ -211,14 +212,14 @@ training. Fraud is never used as a training signal; the labels are only
 used later on the validation split for threshold calibration and metric
 computation. This is what "unsupervised" means in practice here.
 
-### Training loop — `train_autoencoder.py:159-182`
+### Training loop, `train_autoencoder.py:159-182`
 
 - 50 epochs, batch size 256, AdamW optimizer, lr 1e-3.
 - MSE loss between input and reconstruction.
-- Standard PyTorch loop — no fancy scheduler, early stopping, or
+- Standard PyTorch loop, no fancy scheduler, early stopping, or
   gradient clipping.
 
-### From error to probability — `train_autoencoder.py:225-238`
+### From error to probability, `train_autoencoder.py:225-238`
 
 Reconstruction error is just a non-negative real number. To plug the
 autoencoder into the same A/B-testing surface as XGBoost, the code
@@ -239,7 +240,7 @@ The threshold search then runs on these normalised scores
 (`find_optimal_threshold` at line 234). The raw-error threshold is
 stored alongside, because the serving pyfunc wrapper uses raw errors.
 
-### The `AutoencoderPyfunc` wrapper — `train_autoencoder.py:106-138`
+### The `AutoencoderPyfunc` wrapper, `train_autoencoder.py:106-138`
 
 MLflow can't natively serve a PyTorch model the same way it serves
 XGBoost. You wrap it in an `mlflow.pyfunc.PythonModel` so serving code
@@ -247,9 +248,9 @@ can call `.predict(df)` uniformly on either model.
 
 Three artifacts are bundled (lines 267-286):
 
-- `model.pt` — the scripted PyTorch model via `torch.jit.script`
-- `scaler.pkl` — the `StandardScaler` fit on legit training data
-- `threshold.txt` — the raw-error threshold
+- `model.pt`, the scripted PyTorch model via `torch.jit.script`
+- `scaler.pkl`, the `StandardScaler` fit on legit training data
+- `threshold.txt`, the raw-error threshold
 
 At load time (`load_context` at 113-121) all three are restored. At
 predict time (123-138):
@@ -270,7 +271,7 @@ called on artifact paths so MLflow records forward slashes in the
 backslashes and the model fails to load inside the Linux serving
 container.
 
-### Registry promotion — `train_autoencoder.py:303-309`
+### Registry promotion, `train_autoencoder.py:303-309`
 
 Same pattern as XGBoost but promotes to **`challenger`** instead of
 `champion`. The API's A/B router (see [06 § A/B routing](06-serving-api.md))
@@ -327,23 +328,23 @@ These are the production-to-code contract:
 FastAPI resolves `models:/fraud-xgboost@champion` and
 `models:/fraud-autoencoder@challenger` at startup. Promoting a new
 version to `champion` is one `set_registered_model_alias` call
-(`training/model_registry.py:15`) — zero lines of serving code change.
+(`training/model_registry.py:15`), zero lines of serving code change.
 That's the point of aliases.
 
-### The helper module — `training/model_registry.py`
+### The helper module, `training/model_registry.py`
 
 Tiny wrapper around `MlflowClient`:
 
-- `promote_to_champion(model_name, version)` — `:12-16`
-- `promote_to_challenger(model_name, version)` — `:19-23`
-- `get_latest_version(model_name)` — `:26-32`
-- `get_champion_run_id(model_name)` — `:35-39`
+- `promote_to_champion(model_name, version)`, `:12-16`
+- `promote_to_challenger(model_name, version)`, `:19-23`
+- `get_latest_version(model_name)`, `:26-32`
+- `get_champion_run_id(model_name)`, `:35-39`
 
 The training scripts import from here; the retrain DAG uses the
 `MlflowClient` directly. Both patterns coexist; the helpers just keep
 the training-script code readable.
 
-## Shared evaluation — `training/evaluate.py`
+## Shared evaluation, `training/evaluate.py`
 
 Used by both training scripts to avoid drift between XGBoost and
 autoencoder metric definitions.
@@ -396,10 +397,10 @@ ingestion DAG (`train_xgboost.py:71-75`, `train_autoencoder.py:147-151`).
 
 ## Where to go next
 
-- [06 — Serving API](06-serving-api.md) is where these models get
-  loaded and actually used — the A/B router, the SHAP explainer, the
+- [06, Serving API](06-serving-api.md) is where these models get
+  loaded and actually used, the A/B router, the SHAP explainer, the
   `amount_zscore=0` quirk all live there.
-- [07 — Monitoring](07-monitoring.md) covers how runtime metrics reveal
+- [07, Monitoring](07-monitoring.md) covers how runtime metrics reveal
   whether the champion or challenger is winning.
 - [02 § MLflow vocabulary](02-ml-concepts.md#mlflow-vocabulary) is the
   primer if the experiment/run/artifact/registry distinction still

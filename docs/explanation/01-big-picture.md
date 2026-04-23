@@ -1,4 +1,4 @@
-# 01 — The Big Picture
+# 01, The Big Picture
 
 > **What this page answers:** What problem does this project solve, what
 > services exist, how they talk to each other, and what was deliberately
@@ -41,7 +41,7 @@ scripts and notebooks for humans to run:
 
 Kafka, a Zookeeper, and a Go consumer are present as commented-out stubs
 (`docker-compose.yml:107-168`). They belong to a "Phase 8" that was
-deliberately skipped — see [Out of scope](#whats-deliberately-out-of-scope)
+deliberately skipped, see [Out of scope](#whats-deliberately-out-of-scope)
 below.
 
 ## Data flow, end to end
@@ -97,7 +97,7 @@ pages are where the details live.
 - **Airflow** has two DAGs: `data_ingestion` (validate CSV, engineer
   features, write Parquet) and `retrain` (validate, retrain XGBoost,
   promote to champion if PR-AUC improved). It doesn't run on a schedule
-  in practice — you trigger it manually from the UI.
+  in practice, you trigger it manually from the UI.
 - **MLflow** tracks *every* training run (parameters, metrics, artifacts
   including plots and the fitted scaler) and holds a model registry with
   two aliases: `champion` (live) and `challenger` (A/B tested against
@@ -133,24 +133,24 @@ isolation.
 
 ## What's deliberately out of scope
 
-The single most useful thing in this wiki for a recruiter conversation:
-knowing *what you chose not to build* and *why*.
+Knowing *what was chosen not to build* and *why* matters as much as the
+build itself.
 
 | Omitted | Why it would have been bad to include here |
 |---|---|
-| **Kafka + streaming producer + Go consumer** | Adds three containers (Zookeeper, Kafka, producer) to fake a stream that is fundamentally a static CSV. Impressive infra, but buries the ML story. Left as commented stubs in `docker-compose.yml:107-168`. |
+| **Kafka + streaming producer + Go consumer** | Adds three containers (Zookeeper, Kafka, producer) to fake a stream that is fundamentally a static CSV. Impressive infra, but buries the ML layer. Left as commented stubs in `docker-compose.yml:107-168`. |
 | **Feast (feature store)** | Feast solves training/serving skew across many data sources. This dataset is one CSV, one pipeline. Adding Feast would be cargo-culting. |
-| **Kubernetes** | Single-node Docker Compose is honest for a portfolio. K8s YAML doesn't prove anything the project actually needs. |
-| **Isolation Forest (third model)** | Supervised (XGBoost) + unsupervised (autoencoder) already demonstrates two paradigms. A third model is diminishing returns. |
-| **Real authentication on the API** | The API sits inside `fraud-net`. For a portfolio it's fine; the page on [limitations](10-limitations-and-extensions.md) lists this as something you'd add before production. |
+| **Kubernetes** | Single-node Docker Compose is honest for the actual scale. K8s YAML doesn't prove anything the project actually needs. |
+| **Isolation Forest (third model)** | Supervised (XGBoost) + unsupervised (autoencoder) already cover two paradigms. A third model is diminishing returns. |
+| **Real authentication on the API** | The API sits inside `fraud-net`. For a local stack that's fine; [limitations](10-limitations-and-extensions.md) lists this as something to add before production. |
 
 See `plan.md` lines 702-725 for the decision log this table compresses.
 
 ## Where to go next
 
 - If you want to understand the ML concepts these services are built on,
-  read [02 — ML concepts](02-ml-concepts.md) before anything else.
-- If you'd rather trace code, [06 — Serving API](06-serving-api.md) is
+  read [02, ML concepts](02-ml-concepts.md) before anything else.
+- If you'd rather trace code, [06, Serving API](06-serving-api.md) is
   the most self-contained starting point.
-- If you want to speak to trade-offs in an interview, skip to
-  [10 — Limitations and extensions](10-limitations-and-extensions.md).
+- For the consolidated trade-off list, skip to
+  [10, Limitations and extensions](10-limitations-and-extensions.md).

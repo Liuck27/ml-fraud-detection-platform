@@ -1,4 +1,4 @@
-# 08 — Testing and CI
+# 08, Testing and CI
 
 > **What this page answers:** What the test pyramid looks like for this
 > project, why MLflow is mocked in unit tests but real in integration
@@ -11,9 +11,9 @@
        /  \       Integration (tests/integration/)
       /----\      ~3 tests, real services, run locally only
      /      \
-    /--------\    Unit — training (training/tests/)
+    /--------\    Unit, training (training/tests/)
    /          \   ~7 tests, pure numerics, no I/O
-  /------------\  Unit — serving (serving/tests/)
+  /------------\  Unit, serving (serving/tests/)
  /              \ ~14 tests, mocked MLflow, run in CI
  ----------------
 ```
@@ -31,9 +31,9 @@ Two conscious choices:
 No end-to-end tests through Airflow, because DAGs are manually
 triggered in this project and not part of the serving SLA.
 
-## Serving unit tests — `serving/tests/`
+## Serving unit tests, `serving/tests/`
 
-### Shared fixtures — `serving/tests/conftest.py`
+### Shared fixtures, `serving/tests/conftest.py`
 
 This file is the heart of the serving test strategy. Three things
 matter:
@@ -41,7 +41,7 @@ matter:
 #### 1. `SAMPLE_FEATURES` (`conftest.py:26-30`)
 
 A fixed dictionary with all 28 V-features plus `Amount=100.0` and
-`Time=7200.0`. `Time=7200.0` is exactly 2 hours — that maps to
+`Time=7200.0`. `Time=7200.0` is exactly 2 hours, that maps to
 `hour_of_day=2, is_night=False` (since 2 is between 22 and 6 is False),
 which gives tests a deterministic feature-engineering output.
 
@@ -64,9 +64,9 @@ accidental changes to feature logic.
 Mocked pieces:
 
 - `xgb_loaded` / `ae_loaded` flags
-- `predict_xgb.return_value = (0.03, False)` — deterministic
-- `predict_ae.return_value = (0.07, False)` — deterministic
-- `_xgb_scaler.transform.return_value = np.zeros((1, 33))` — for the
+- `predict_xgb.return_value = (0.03, False)`, deterministic
+- `predict_ae.return_value = (0.07, False)`, deterministic
+- `_xgb_scaler.transform.return_value = np.zeros((1, 33))`, for the
   SHAP path
 
 #### 3. The `mock_registry` and `client` fixtures (`conftest.py:76-94`)
@@ -77,11 +77,11 @@ explainer so tests don't try to create a real `shap.TreeExplainer`
 against a MagicMock (which would crash).
 
 `client` wraps the real FastAPI `app` in a `TestClient`. The whole
-app — routes, middleware, Pydantic validation, Instrumentator — runs
+app, routes, middleware, Pydantic validation, Instrumentator, runs
 exactly as it does in production; only the MLflow-backed registry is
 fake.
 
-### `test_predict.py` — nine tests
+### `test_predict.py`, nine tests
 
 | Test | What it locks in | Line |
 |---|---|---|
@@ -100,7 +100,7 @@ generates a random `transaction_id` unless one is specified, giving
 deterministic tests where it matters and randomised ones where it
 doesn't.
 
-### `test_ab_testing.py` — five tests
+### `test_ab_testing.py`, five tests
 
 | Test | What it locks in | Line |
 |---|---|---|
@@ -119,14 +119,14 @@ actual = challenger_count / n
 assert abs(actual - 0.20) < 0.02
 ```
 
-Ten thousand samples gives ~2% noise on a Bernoulli(0.2) mean — that's
+Ten thousand samples gives ~2% noise on a Bernoulli(0.2) mean, that's
 the basis for the ±0.02 tolerance. Smaller `n` (say 1000) would have
 noisier variance and flake occasionally; larger `n` (100,000) would
 slow CI for no real gain.
 
-## Training unit tests — `training/tests/test_evaluate.py`
+## Training unit tests, `training/tests/test_evaluate.py`
 
-Seven tests, all pure numerics — no I/O, no MLflow:
+Seven tests, all pure numerics, no I/O, no MLflow:
 
 | Test | What it checks | Line |
 |---|---|---|
@@ -138,7 +138,7 @@ Seven tests, all pure numerics — no I/O, no MLflow:
 | `test_find_optimal_threshold_in_valid_range` | Threshold ∈ [0, 1] | 99-102 |
 | `test_find_optimal_threshold_cost_sensitivity` | Higher FN cost → lower threshold | 105-111 |
 
-The cost-sensitivity test is the important one — it encodes the
+The cost-sensitivity test is the important one, it encodes the
 [02 § Decision threshold tuning](02-ml-concepts.md#decision-threshold-tuning)
 theory as a property: `cost_fn=50, cost_fp=1` should always give a
 threshold `≤` one from `cost_fn=1, cost_fp=1`. If someone flips the
@@ -147,18 +147,18 @@ cost parameters by mistake, this test catches it.
 ### Why no tests on the training scripts themselves
 
 `train_xgboost.py` and `train_autoencoder.py` are orchestration
-scripts — they read Parquet, fit sklearn/XGBoost/PyTorch objects,
+scripts, they read Parquet, fit sklearn/XGBoost/PyTorch objects,
 log to MLflow. Unit-testing "does SMOTE oversample?" or "does XGBoost
 converge?" would be testing the libraries, not this code. The
 valuable test boundary is `evaluate.py`, which holds the actual
 project logic.
 
-## Integration tests — `tests/integration/`
+## Integration tests, `tests/integration/`
 
 Three tests in `test_pipeline_e2e.py`, plus a Kafka placeholder
 (`test_kafka_flow.py` is a one-line stub for a future Phase 11).
 
-### The reachability pattern — `conftest.py:22-28`
+### The reachability pattern, `conftest.py:22-28`
 
 ```python
 def _is_reachable(url, timeout=2.0):
@@ -174,7 +174,7 @@ running, the test is **skipped**, not failed. This means:
 
 - Running `make test-integration` without starting docker compose
   produces a clean pytest report with skips, not noise.
-- Integration tests *never* fail CI — they're not wired to CI
+- Integration tests *never* fail CI, they're not wired to CI
   (`.github/workflows/ci.yml` only runs unit tests).
 - A degraded MLflow (running but no models registered) gets a
   separate fixture (`api_url_with_models`) that skips with a clear
@@ -183,14 +183,14 @@ running, the test is **skipped**, not failed. This means:
 ### The three real tests
 
 **`test_predict_returns_valid_response`** (`test_pipeline_e2e.py:25-56`)
-— POSTs a fixed transaction to the live API and asserts the response
+, POSTs a fixed transaction to the live API and asserts the response
 is schema-complete (probability in `[0,1]`, `is_fraud` is a bool,
 SHAP explanation has `feature` and `contribution` fields on each
 item, etc). This is the only test that actually exercises a real
 MLflow-loaded XGBoost model + real SHAP.
 
 **`test_metrics_endpoint_has_inference_counters`** (`test_pipeline_e2e.py:64-78`)
-— fires a prediction, then hits `/metrics`, and asserts the output
+, fires a prediction, then hits `/metrics`, and asserts the output
 text contains `inference_total` and `inference_latency_seconds`. This
 is the cheapest end-to-end check that the Prometheus instrumentation
 actually exports what Grafana expects. If the metric names drift in
@@ -198,7 +198,7 @@ actually exports what Grafana expects. If the metric names drift in
 an empty target.
 
 **`test_mlflow_has_champion_alias`** (`test_pipeline_e2e.py:86-104`)
-— queries the MLflow REST API directly (no `mlflow` SDK in the test
+, queries the MLflow REST API directly (no `mlflow` SDK in the test
 venv) to assert that `fraud-xgboost@champion` is set. This is a
 "training happened and promotion worked" canary.
 
@@ -213,36 +213,36 @@ tests prove the three non-trivial integration surfaces work:
 
 Adding a Grafana-renders-correctly test would require a browser
 driver. Adding an Airflow-DAG-runs test would require triggering the
-DAG and waiting. The ROI on either isn't there for a portfolio.
+DAG and waiting. The ROI on either isn't there at this scale.
 
 ## The `Makefile` test targets
 
 Already covered in [03 § Testing](03-infrastructure.md#testing--makefile126-144)
 but worth restating:
 
-- `make test` — both unit suites (training + serving)
-- `make test-serving` — serving only (fast, ~1s)
-- `make test-training` — training only (fast, ~1s)
-- `make test-integration` — integration, needs docker compose up
-- `make check` — `format-check + lint + typecheck + test` (local CI
+- `make test`, both unit suites (training + serving)
+- `make test-serving`, serving only (fast, ~1s)
+- `make test-training`, training only (fast, ~1s)
+- `make test-integration`, integration, needs docker compose up
+- `make check`, `format-check + lint + typecheck + test` (local CI
   parity)
 
-## GitHub Actions — `.github/workflows/ci.yml`
+## GitHub Actions, `.github/workflows/ci.yml`
 
 Three jobs, runs on `push` to `main` / `dev` and on PRs to `main`.
 
-### Job 1 — `lint` (`ci.yml:10-33`)
+### Job 1, `lint` (`ci.yml:10-33`)
 
 Installs `ruff==0.1.9` and `black==23.12.1` directly (no venv), runs:
 
-- `ruff check .` — linting
-- `black --check .` — formatting assertion
+- `ruff check .`, linting
+- `black --check .`, formatting assertion
 
 Both are pinned to specific versions so CI can't break because of a
 tool-side release. If you bump the version in `requirements-dev.txt`,
 also bump it here.
 
-### Job 2 — `typecheck` (`ci.yml:35-63`)
+### Job 2, `typecheck` (`ci.yml:35-63`)
 
 Two mypy passes: one on `serving/app/`, one on `training/`.
 
@@ -258,9 +258,9 @@ surfacing real issues in the job logs.
 When the code stabilises, flip this to `false` and take the signal
 seriously. For now it's a tradeoff: signal-rich but not gating.
 
-### Job 3 — `test` (`ci.yml:65-91`)
+### Job 3, `test` (`ci.yml:65-91`)
 
-- **`needs: lint`** — only runs if lint passed. No point running tests
+- **`needs: lint`**, only runs if lint passed. No point running tests
   on code that won't merge.
 - **Only serving tests.** `pytest serving/tests/ -v --tb=short
   --cov=serving --cov-report=term-missing` (line 91).
@@ -289,7 +289,7 @@ Running integration tests in GitHub Actions would require:
 3. Running training inside CI (~2-3 minutes).
 4. Then the tests.
 
-Total budget: ~15 minutes per CI run. Not worth it for a portfolio —
+Total budget: ~15 minutes per CI run. Not worth it at this scale,
 `make test-integration` locally after a big change is the pragmatic
 approach.
 
@@ -306,7 +306,7 @@ whole stack, not a per-commit check.
   (`make audit`) but isn't wired to CI. A `pip-audit` job on the
   requirements files would catch CVEs on push.
 - **No integration tests in CI.** Discussed above; acceptable for a
-  portfolio, not for production.
+  local development, not for production.
 - **No mutation testing.** Tests protect against the bugs their
   authors thought of. Running `mutmut` occasionally would surface
   blind spots.
@@ -318,13 +318,13 @@ whole stack, not a per-commit check.
   latency wouldn't fail CI. Adding a simple `pytest-benchmark` check
   on the `prepare_features` function would be quick wins.
 - **Kafka integration test is a stub.** `tests/integration/test_kafka_flow.py`
-  is one comment line — the pattern is there for a future Phase 11,
+  is one comment line, the pattern is there for a future Phase 11,
   which is deliberately out of scope.
 
 ## Where to go next
 
-- [09 — Glossary](09-glossary.md) if you want the quick reference of
+- [09, Glossary](09-glossary.md) if you want the quick reference of
   every term used anywhere in this wiki.
-- [10 — Limitations and extensions](10-limitations-and-extensions.md)
+- [10, Limitations and extensions](10-limitations-and-extensions.md)
   consolidates every limitation section across the wiki into one
   ranked list.

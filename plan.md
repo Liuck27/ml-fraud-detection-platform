@@ -1,17 +1,17 @@
-# ML Fraud Detection Platform — Implementation Plan
+# ML Fraud Detection Platform, Implementation Plan
 
 ## 1. Project Overview
 
 ### What It Does
 
-A fraud detection platform that handles the full ML lifecycle: data ingestion, feature engineering, model training with experiment tracking, real-time inference via REST API, and monitoring with drift detection. Built to demonstrate practical MLOps skills on a real-world imbalanced classification problem.
+A fraud detection platform that handles the full ML lifecycle: data ingestion, feature engineering, model training with experiment tracking, real-time inference via REST API, and monitoring with drift detection. Covers practical MLOps on a real-world imbalanced classification problem.
 
 ### Why This Problem
 
-Fraud detection is one of the most practical ML applications in industry. It highlights skills that matter in real roles:
-- **Imbalanced data handling** — fraud is <1% of transactions. Naive models get 99% accuracy by predicting "not fraud" every time.
-- **Cost-sensitive decisions** — a missed fraud (false negative) costs real money; a false alarm (false positive) frustrates customers. The right threshold depends on business context.
-- **End-to-end thinking** — training a model is not enough. It needs to be served, monitored, and retrained when patterns shift.
+Fraud detection is one of the most practical ML applications in industry. It touches on concerns that matter in real roles:
+- **Imbalanced data handling**: fraud is <1% of transactions. Naive models get 99% accuracy by predicting "not fraud" every time.
+- **Cost-sensitive decisions**: a missed fraud (false negative) costs real money; a false alarm (false positive) frustrates customers. The right threshold depends on business context.
+- **End-to-end thinking**: training a model is not enough. It needs to be served, monitored, and retrained when patterns shift.
 
 ### Architecture
 
@@ -77,7 +77,7 @@ flowchart TD
 | scikit-learn | Preprocessing, metrics, baselines |
 | XGBoost | Main classifier (gradient boosting) |
 | PyTorch | Autoencoder for anomaly detection |
-| SHAP | Model explainability — why did it flag this transaction? |
+| SHAP | Model explainability, why did it flag this transaction? |
 | imbalanced-learn | SMOTE oversampling for class imbalance |
 
 ### MLOps & Serving
@@ -106,20 +106,20 @@ flowchart TD
 
 **Kaggle Credit Card Fraud Detection**
 - 284,807 transactions, 492 frauds (0.172%)
-- 30 features: `Time`, `Amount`, and 28 PCA-transformed features (`V1`–`V28`)
+- 30 features: `Time`, `Amount`, and 28 PCA-transformed features (`V1`-`V28`)
 - Target: `Class` (0 = legit, 1 = fraud)
 - Download to `data/raw/creditcard.csv` (gitignored)
 
 ### Engineered Features
 
-Added on top of the raw V1–V28 + Amount:
-- `amount_log` — log1p(Amount), reduces skew
-- `amount_zscore` — Z-score normalized Amount
-- `hour_of_day` — derived from Time field
-- `is_night` — 22:00–06:00 flag
-- `v1_v2_interaction` — V1 * V2 interaction term
+Added on top of the raw V1-V28 + Amount:
+- `amount_log`, log1p(Amount), reduces skew
+- `amount_zscore`, Z-score normalized Amount
+- `hour_of_day`, derived from Time field
+- `is_night`, 22:00-06:00 flag
+- `v1_v2_interaction`, V1 * V2 interaction term
 
-No rolling windows or aggregations — the dataset has no user/card grouping to roll over.
+No rolling windows or aggregations, the dataset has no user/card grouping to roll over.
 
 ### Class Imbalance Strategy
 
@@ -128,7 +128,7 @@ The dataset is 99.83% legitimate / 0.17% fraud:
 1. **Training**: SMOTE oversampling + `scale_pos_weight` in XGBoost
 2. **Evaluation**: Precision, recall, F1, AUC-ROC, and PR-AUC (more informative than ROC-AUC on imbalanced data)
 3. **Threshold tuning**: Optimize on the precision-recall curve based on a cost ratio (missed fraud costs more than a false alarm)
-4. **Anomaly detection**: The autoencoder learns "normal" transactions only — fraud shows up as high reconstruction error
+4. **Anomaly detection**: The autoencoder learns "normal" transactions only, fraud shows up as high reconstruction error
 
 ---
 
@@ -136,7 +136,7 @@ The dataset is 99.83% legitimate / 0.17% fraud:
 
 ### a) Data Ingestion & Feature Engineering (Airflow)
 
-Orchestrates data loading, validation, and feature computation. The retraining DAG chains data validation → feature engineering → model training → model registration — that multi-step dependency with failure handling is Airflow's sweet spot.
+Orchestrates data loading, validation, and feature computation. The retraining DAG chains data validation → feature engineering → model training → model registration, that multi-step dependency with failure handling is Airflow's sweet spot.
 
 **DAGs:**
 - `data_ingestion_dag.py`: validate CSV → compute features → write `data/processed/features.parquet`
@@ -146,10 +146,10 @@ Orchestrates data loading, validation, and feature computation. The retraining D
 
 **Two models, different approaches:**
 
-1. **XGBoost Classifier** (champion) — supervised, trained on all labeled data with SMOTE + `scale_pos_weight`
-2. **PyTorch Autoencoder** (challenger) — unsupervised anomaly detection, trained on legitimate transactions only; fraud = high reconstruction error (MSE above threshold); architecture: Input(30) → 64 → 32 → 16 → 32 → 64 → Output(30)
+1. **XGBoost Classifier** (champion), supervised, trained on all labeled data with SMOTE + `scale_pos_weight`
+2. **PyTorch Autoencoder** (challenger), unsupervised anomaly detection, trained on legitimate transactions only; fraud = high reconstruction error (MSE above threshold); architecture: Input(30) → 64 → 32 → 16 → 32 → 64 → Output(30)
 
-XGBoost is the reliable workhorse for tabular data. The autoencoder shows a different angle — unsupervised anomaly detection that doesn't need fraud labels. Comparing them via A/B testing demonstrates how teams evaluate model alternatives in practice.
+XGBoost is the reliable workhorse for tabular data. The autoencoder shows a different angle: unsupervised anomaly detection that doesn't need fraud labels. Comparing them via A/B testing mirrors how teams evaluate model alternatives in practice.
 
 All runs log hyperparameters, metrics, and model artifacts to MLflow. Registry aliases: `champion` (production), `challenger` (staging). Autoencoder exported via TorchScript.
 
@@ -158,13 +158,13 @@ All runs log hyperparameters, metrics, and model artifacts to MLflow. Registry a
 ### c) Model Serving API (FastAPI)
 
 **Endpoints:**
-- `POST /predict` — single transaction → fraud score + SHAP explanation
-- `POST /predict/batch` — up to 1000 transactions
-- `GET /health` — service status + loaded models
-- `GET /models` — model versions, roles, metrics
-- `GET /metrics` — Prometheus metrics
+- `POST /predict`, single transaction → fraud score + SHAP explanation
+- `POST /predict/batch`, up to 1000 transactions
+- `GET /health`, service status + loaded models
+- `GET /models`, model versions, roles, metrics
+- `GET /metrics`, Prometheus metrics
 
-**A/B Testing:** Deterministic hash routing — `hash(transaction_id) % 100 < challenger_pct`. Same transaction always routes to the same model. Split ratio configurable via env var (default: 80/20).
+**A/B Testing:** Deterministic hash routing, `hash(transaction_id) % 100 < challenger_pct`. Same transaction always routes to the same model. Split ratio configurable via env var (default: 80/20).
 
 **SHAP Explanations:** Top contributing features on every `/predict` response (e.g. "V14 pushed score up by 0.3"). Uses SHAP TreeExplainer for XGBoost. Important for compliance and trust.
 
@@ -173,14 +173,14 @@ All runs log hyperparameters, metrics, and model artifacts to MLflow. Registry a
 ### d) Monitoring & Drift Detection
 
 **Prometheus metrics:**
-- `inference_latency_seconds` (histogram) — per model
-- `inference_total` (counter) — per model, per prediction class
+- `inference_latency_seconds` (histogram), per model
+- `inference_total` (counter), per model, per prediction class
 - `inference_errors_total` (counter)
-- `ab_test_assignments_total` (counter) — per model variant
+- `ab_test_assignments_total` (counter), per model variant
 
 **Grafana dashboard (4 panels, provisioned via JSON):** Request rate, fraud rate %, p99 latency, A/B traffic split.
 
-**Drift detection (`scripts/drift_report.py`):** Standalone ~50-line script, run manually. Compares training vs. recent serving data using Evidently `DataDriftPreset`, outputs HTML to `data/reports/`. Not integrated into Airflow — it's a diagnostic tool.
+**Drift detection (`scripts/drift_report.py`):** Standalone ~50-line script, run manually. Compares training vs. recent serving data using Evidently `DataDriftPreset`, outputs HTML to `data/reports/`. Not integrated into Airflow, it's a diagnostic tool.
 
 ---
 
@@ -267,7 +267,7 @@ ml-fraud-detection-platform/
 
 ## 6. Implementation Phases
 
-### Phase 1: Project Scaffold & Infrastructure Foundation ✅ DONE
+### Phase 1: Project Scaffold & Infrastructure Foundation
 
 **Deliverables:** Docker Compose + PostgreSQL + Makefile + `.env` / `.env.example`
 
@@ -277,7 +277,7 @@ ml-fraud-detection-platform/
 
 ---
 
-### Phase 2: Data Ingestion & EDA ✅ DONE
+### Phase 2: Data Ingestion & EDA
 
 **Files:** `scripts/download_data.py`, `training/notebooks/eda.ipynb`, `airflow/plugins/feature_engineering.py`, `airflow/dags/data_ingestion_dag.py`
 
@@ -288,7 +288,7 @@ ml-fraud-detection-platform/
 
 ---
 
-### Phase 3: Model Training with MLflow ✅ DONE
+### Phase 3: Model Training with MLflow
 
 **Files:** `training/evaluate.py`, `training/train_xgboost.py`, `training/train_autoencoder.py`, `training/model_registry.py`, `scripts/run_training.sh`, `Dockerfile.mlflow`
 
@@ -299,7 +299,7 @@ ml-fraud-detection-platform/
 
 ---
 
-### Phase 4: FastAPI Serving + A/B Testing + Explainability ✅ DONE
+### Phase 4: FastAPI Serving + A/B Testing + Explainability
 
 **Files:** `serving/app/` (config, schemas, routes, models/loader, ab_testing, explainer), serving tests
 
@@ -310,7 +310,7 @@ ml-fraud-detection-platform/
 
 ---
 
-### Phase 5: Monitoring + Drift Detection ✅ DONE
+### Phase 5: Monitoring + Drift Detection
 
 **Files:** `monitoring/prometheus/prometheus.yml`, `monitoring/grafana/provisioning/`, `monitoring/alerting/rules.yml`, `scripts/drift_report.py`
 
@@ -380,6 +380,6 @@ make check               # format-check + lint + typecheck + test
 | Omitted | Why |
 |---------|-----|
 | **Kafka / streaming** | Would add 3+ containers for a synthetic demo stream. Impressive infrastructure, but ML signal-to-noise ratio drops. Noted in README as a potential extension. |
-| **Feast feature store** | The dataset is a single static CSV. A feature store solves training-serving skew across multiple data sources — that problem doesn't exist here. |
-| **Kubernetes** | Single-node Docker Compose is honest for a local portfolio project. K8s adds YAML complexity without demonstrating anything this project needs. |
+| **Feast feature store** | The dataset is a single static CSV. A feature store solves training-serving skew across multiple data sources, that problem doesn't exist here. |
+| **Kubernetes** | Single-node Docker Compose is honest for the actual scale. K8s adds YAML complexity without adding anything this project needs. |
 | **Isolation Forest** | XGBoost + Autoencoder already shows supervised + unsupervised. A third model adds diminishing returns. |
