@@ -1,16 +1,16 @@
-# 03 — Infrastructure
+# 03, Infrastructure
 
 > **What this page answers:** How the stack runs on one laptop, why every
 > service has its own Python environment, what the `Makefile` is actually
 > for, and where secrets live.
 
-Read [01 — Big picture](01-big-picture.md) first if you haven't — this page
+Read [01, Big picture](01-big-picture.md) first if you haven't, this page
 assumes you already know the six services.
 
 ## Why Docker Compose
 
-The whole stack — Postgres, MLflow, Airflow (three containers), FastAPI,
-Prometheus, Grafana — comes up with `docker compose up -d`. That single
+The whole stack, Postgres, MLflow, Airflow (three containers), FastAPI,
+Prometheus, Grafana, comes up with `docker compose up -d`. That single
 command is the headline feature:
 
 - **Reproducible.** Anyone who clones the repo and has Docker installed
@@ -31,7 +31,7 @@ What Compose gives up versus something like Kubernetes:
 - **No secret management.** Secrets live in a plain `.env` file that you
   have to remember not to commit.
 
-For a portfolio project, those trade-offs are correct: readability beats
+At this scale, those trade-offs are correct: readability beats
 theoretical scale.
 
 ## `docker-compose.yml` walkthrough
@@ -40,7 +40,7 @@ All services share one bridge network (`fraud-net`) so they can resolve
 each other by service name (`postgres`, `mlflow`, etc). The file is at
 `docker-compose.yml`; line ranges below are stable at time of writing.
 
-### PostgreSQL — `docker-compose.yml:27-48`
+### PostgreSQL, `docker-compose.yml:27-48`
 
 ```yaml
 postgres:
@@ -52,20 +52,20 @@ postgres:
   healthcheck: pg_isready ...
 ```
 
-- **One database, three schemas/DBs** — Postgres hosts the Airflow
+- **One database, three schemas/DBs**, Postgres hosts the Airflow
   metadata DB, the MLflow tracking DB, and the project's own `fraud_db`.
   `scripts/init_db.sql` runs once on first start and creates the extra
   databases MLflow/Airflow need.
-- **Healthcheck** — the `pg_isready` loop at lines 41-46 is what every
+- **Healthcheck**, the `pg_isready` loop at lines 41-46 is what every
   other service waits on via `depends_on: condition: service_healthy`.
   Without this, MLflow and Airflow would race Postgres on the first
   `docker compose up` and crash-loop.
-- **Volume `postgres_data`** (declared at line 229) — named volume, not a
+- **Volume `postgres_data`** (declared at line 229), named volume, not a
   bind mount, so the data persists across `docker compose down` but gets
   wiped by `docker compose down -v` (that's what `make down-volumes`
   does).
 
-### MLflow — `docker-compose.yml:52-74`
+### MLflow, `docker-compose.yml:52-74`
 
 ```yaml
 mlflow:
@@ -78,34 +78,34 @@ mlflow:
 ```
 
 - **Custom image** (`Dockerfile.mlflow`) instead of the stock MLflow image
-  so psycopg2 is included — MLflow's Postgres backend needs it.
+  so psycopg2 is included, MLflow's Postgres backend needs it.
 - **`--serve-artifacts`** (line 70) makes MLflow the single source of
   truth for artifact downloads. The serving container doesn't need direct
   filesystem access to fetch models by URI; it talks HTTP to MLflow. But
-  see the next point — it also has filesystem access, for a reason.
-- **`mlflow_artifacts` volume** — this named volume is shared with the
+  see the next point, it also has filesystem access, for a reason.
+- **`mlflow_artifacts` volume**, this named volume is shared with the
   serving container (`docker-compose.yml:181`). See
   [Shared artifacts volume](#shared-artifacts-volume-why) below.
 
-### Airflow — `docker-compose.yml:79-103`
+### Airflow, `docker-compose.yml:79-103`
 
 Three containers built from the same image (`airflow/Dockerfile`) using a
 YAML anchor (`x-airflow-common: &airflow-common` at lines 9-22) to avoid
 repetition:
 
-- **`airflow-init`** (79-83) — runs `airflow db migrate` then creates an
+- **`airflow-init`** (79-83), runs `airflow db migrate` then creates an
   admin user. `restart: "no"` because this is a one-shot task; the other
   two wait for it to complete successfully before starting.
-- **`airflow-webserver`** (85-94) — UI at `:8080`. Login: `admin` /
+- **`airflow-webserver`** (85-94), UI at `:8080`. Login: `admin` /
   `admin` (dev only; spelled out in the init command at line 82).
-- **`airflow-scheduler`** (96-103) — the process that actually runs DAGs.
+- **`airflow-scheduler`** (96-103), the process that actually runs DAGs.
   Without it, DAGs appear in the UI but never execute.
 
 DAG and plugin code is bind-mounted from the host (`./airflow/dags`,
 `./airflow/plugins`) so you can edit a DAG on your laptop and see the
 scheduler pick it up without rebuilding the image.
 
-### FastAPI serving — `docker-compose.yml:171-188`
+### FastAPI serving, `docker-compose.yml:171-188`
 
 ```yaml
 serving:
@@ -120,14 +120,14 @@ serving:
     mlflow:   { condition: service_started }
 ```
 
-- **`depends_on` is weak** — `service_started` on MLflow only waits for
+- **`depends_on` is weak**, `service_started` on MLflow only waits for
   the container to exist, not for MLflow to be ready to serve requests.
   The startup code in `serving/app/main.py:24-33` is what actually
   retries model loads; this is documented on the serving page.
-- **Port 8000** — both `/predict` and `/metrics` live on it. Prometheus
+- **Port 8000**, both `/predict` and `/metrics` live on it. Prometheus
   scrapes `serving:8000/metrics` every 15s.
 
-### Prometheus — `docker-compose.yml:192-205`
+### Prometheus, `docker-compose.yml:192-205`
 
 ```yaml
 prometheus:
@@ -141,13 +141,13 @@ prometheus:
 
 - **Config is read-only bind-mounted.** Editing
   `monitoring/prometheus/prometheus.yml` on the host and restarting the
-  container is the workflow — no rebuild needed.
+  container is the workflow, no rebuild needed.
 - **15-day retention.** TSDB is on the container's ephemeral storage, not
-  a named volume. That's an intentional trade-off for a portfolio: if
+  a named volume. That's an intentional trade-off: if
   you want Prometheus data to survive `docker compose down -v`, add a
   `prometheus_data` volume.
 
-### Grafana — `docker-compose.yml:209-221`
+### Grafana, `docker-compose.yml:209-221`
 
 ```yaml
 grafana:
@@ -163,9 +163,9 @@ grafana:
 - **Admin credentials** come from `GF_SECURITY_ADMIN_USER` and
   `GF_SECURITY_ADMIN_PASSWORD` in `.env`.
 
-### Kafka / Zookeeper / producers — `docker-compose.yml:107-168`
+### Kafka / Zookeeper / producers, `docker-compose.yml:107-168`
 
-Left as commented stubs. See [01 — Big picture § Out of scope](01-big-picture.md#whats-deliberately-out-of-scope)
+Left as commented stubs. See [01, Big picture § Out of scope](01-big-picture.md#whats-deliberately-out-of-scope)
 for why.
 
 ## Shared artifacts volume (why)
@@ -182,7 +182,7 @@ autoencoder weights, `scaler.pkl`) to `/app/mlartifacts`. When FastAPI
 starts up and calls `mlflow.pyfunc.load_model("models:/fraud-xgboost@champion")`,
 MLflow's client library resolves that URI to an artifact path, and
 because the path is visible inside the serving container too, the load
-is essentially a local file read — no HTTP copy.
+is essentially a local file read, no HTTP copy.
 
 This is a slightly unusual choice. The alternative is pulling artifacts
 over HTTP via `--serve-artifacts`, which works but is slower and adds a
@@ -214,7 +214,7 @@ hostname inside the network:
 - From `airflow-*`, `postgres:5432` resolves to the DB.
 
 This is why `.env` has `MLFLOW_TRACKING_URI=http://mlflow:5000` and
-`POSTGRES_HOST=postgres` — those hostnames only work *inside* the
+`POSTGRES_HOST=postgres`, those hostnames only work *inside* the
 network. From your laptop's browser you use `localhost:5000`, which
 hits the port-mapped side (`5000:5000`).
 
@@ -263,11 +263,11 @@ If Compose is the machine API, the `Makefile` is the human one. It groups
 targets by concern with comment headers (`## ── Infrastructure ──`,
 `## ── Testing ──`, ...) so `make help` renders a clean menu.
 
-### Infrastructure — `Makefile:27-53`
+### Infrastructure, `Makefile:27-53`
 
 | Target | What it does |
 |---|---|
-| `up` | `docker compose up -d` — start everything |
+| `up` | `docker compose up -d`, start everything |
 | `up-postgres` | Postgres only (leftover from Phase 1 when it was all you had) |
 | `up-monitoring` | `prometheus` + `grafana` only (Phase 5 isolation) |
 | `down` | Stop; keep volumes |
@@ -276,13 +276,13 @@ targets by concern with comment headers (`## ── Infrastructure ──`,
 | `ps` | `docker compose ps` |
 | `psql` | `psql` shell into the Postgres container |
 
-### Virtual environments — `Makefile:57-92`
+### Virtual environments, `Makefile:57-92`
 
 `make venv`, `make venv-training`, `make venv-serving`, `make
 venv-airflow`, `make venv-evidently`, plus `make venv-all` to create
 every one and `make clean-venvs` to nuke them.
 
-### Code quality — `Makefile:96-122`
+### Code quality, `Makefile:96-122`
 
 | Target | Runs under | What it does |
 |---|---|---|
@@ -295,7 +295,7 @@ every one and `make clean-venvs` to nuke them.
 checker, because training imports (torch, sklearn) are not installed in
 the dev venv.
 
-### Testing — `Makefile:126-144`
+### Testing, `Makefile:126-144`
 
 | Target | Runs under | What it does |
 |---|---|---|
@@ -303,12 +303,12 @@ the dev venv.
 | `test-serving` | serving | Just `serving/tests/` |
 | `test-training` | training | Just `training/` |
 | `test-integration` | dev | `tests/integration/` (needs docker compose services running) |
-| `check` | multiple | `format-check + lint + typecheck + test` — the CI equivalent |
+| `check` | multiple | `format-check + lint + typecheck + test`, the CI equivalent |
 
 `make check` is the single command you run before pushing: if it
 passes locally, CI will pass.
 
-### Training — `Makefile:148-157`
+### Training, `Makefile:148-157`
 
 | Target | What it does |
 |---|---|
@@ -316,7 +316,7 @@ passes locally, CI will pass.
 | `train-autoencoder` | Train AE, log to MLflow, register as `challenger` |
 | `train` | Run both in sequence |
 
-### Data + monitoring — `Makefile:161-171`
+### Data + monitoring, `Makefile:161-171`
 
 | Target | What it does |
 |---|---|
@@ -327,10 +327,10 @@ passes locally, CI will pass.
 
 Two files, one committed, one not:
 
-- **`.env.example`** — committed. Every variable the stack reads, with
+- **`.env.example`**, committed. Every variable the stack reads, with
   placeholder values like `change_me_postgres`. A new contributor copies
   this to `.env` and fills in real values.
-- **`.env`** — gitignored. The real values.
+- **`.env`**, gitignored. The real values.
 
 ### What goes in `.env` (grouped as in `.env.example`)
 
@@ -365,7 +365,7 @@ placeholder. The `.env.example` shows how to generate one:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-If you forget, Airflow won't start — it fails hard on an invalid Fernet
+If you forget, Airflow won't start, it fails hard on an invalid Fernet
 key rather than silently running with a bad one, which is the right
 default.
 
@@ -383,7 +383,7 @@ default.
   public internet.
 - **No auth on MLflow, Prometheus, or the FastAPI `/predict`
   endpoint.** Grafana has a login, Airflow has a login, the others
-  don't. See [10 — Limitations and extensions](10-limitations-and-extensions.md)
+  don't. See [10, Limitations and extensions](10-limitations-and-extensions.md)
   for what you'd add first.
 - **`.env` is plain text.** Sufficient for dev; in a real deployment
   you'd use a secret manager (AWS Secrets Manager, GCP Secret Manager,
@@ -394,9 +394,9 @@ default.
 
 ## Where to go next
 
-- [04 — Data and features](04-data-and-features.md) covers the dataset,
+- [04, Data and features](04-data-and-features.md) covers the dataset,
   the ingestion DAG, and what every engineered feature actually means.
-- [06 — Serving API](06-serving-api.md) dives into how the FastAPI
+- [06, Serving API](06-serving-api.md) dives into how the FastAPI
   container talks to MLflow and renders SHAP responses.
-- [10 — Limitations and extensions](10-limitations-and-extensions.md)
+- [10, Limitations and extensions](10-limitations-and-extensions.md)
   has the consolidated "what I'd change before shipping" list.

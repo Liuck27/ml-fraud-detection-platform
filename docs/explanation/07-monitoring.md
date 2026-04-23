@@ -1,4 +1,4 @@
-# 07 — Monitoring
+# 07, Monitoring
 
 > **What this page answers:** How raw Prometheus metrics become a Grafana
 > dashboard, what each alert actually means, and when to reach for the
@@ -28,7 +28,7 @@ is useful before diving in.
 - **Grafana** is the viewer. It queries Prometheus over HTTP using
   PromQL and renders panels.
 - **Evidently** is a *separate*, *offline* diagnostic tool. It doesn't
-  plug into Prometheus at all — it reads Parquet files and emits an
+  plug into Prometheus at all, it reads Parquet files and emits an
   HTML report.
 
 Running `make up-monitoring` starts Prometheus + Grafana; `make up`
@@ -38,17 +38,17 @@ starts everything.
 
 Three metric types show up here:
 
-- **Counter** — monotonically increasing count. Only goes up, never
+- **Counter**, monotonically increasing count. Only goes up, never
   down. Good for "total requests", "total errors". You always query
   counters via `rate()` to get a per-second derivative.
-- **Gauge** — a value that can go up or down. This project doesn't
+- **Gauge**, a value that can go up or down. This project doesn't
   define any custom gauges, but Prometheus-fastapi-instrumentator
   exposes some for in-flight requests.
-- **Histogram** — a set of predefined buckets plus a sum and count.
+- **Histogram**, a set of predefined buckets plus a sum and count.
   Enables `histogram_quantile(0.99, ...)` to estimate tail latencies
   cheaply. This project's `inference_latency_seconds` is a histogram.
 
-## Prometheus config — `monitoring/prometheus/prometheus.yml`
+## Prometheus config, `monitoring/prometheus/prometheus.yml`
 
 Only 17 lines:
 
@@ -70,17 +70,17 @@ scrape_configs:
 
 Key points:
 
-- **`scrape_interval: 15s`** — Prometheus reads `/metrics` four times a
+- **`scrape_interval: 15s`**, Prometheus reads `/metrics` four times a
   minute. Higher resolution (5s or 1s) exists but would 3-15× the TSDB
   size for no practical gain here.
-- **`evaluation_interval: 15s`** — alerts are re-evaluated every 15s.
+- **`evaluation_interval: 15s`**, alerts are re-evaluated every 15s.
   The `for:` clause on each alert is what adds delay to actual firing.
-- **`targets: [serving:8000]`** — uses Docker DNS inside `fraud-net`.
+- **`targets: [serving:8000]`**, uses Docker DNS inside `fraud-net`.
   `serving` resolves to the FastAPI container. From outside the
   compose network (like your browser), you'd use `localhost:8000`
   instead.
 - **Prometheus scrapes itself.** The `job_name: prometheus` entry lets
-  you see Prometheus's own memory usage and scrape duration metrics —
+  you see Prometheus's own memory usage and scrape duration metrics,
   useful when you need to debug "is the dashboard slow because
   Prometheus is slow?".
 
@@ -89,17 +89,16 @@ Key points:
 The `rules.yml` file defines alerts, but there's no AlertManager
 service in `docker-compose.yml`. That means alerts fire *in
 Prometheus* (visible at `http://localhost:9090/alerts`) but they don't
-route anywhere — no Slack, no PagerDuty, no email. This is intentional
-for a portfolio project: AlertManager adds a container and an
-integration step, and the alerts are best seen live in the Prometheus
-UI anyway.
+route anywhere, no Slack, no PagerDuty, no email. This is intentional
+AlertManager would add a container and an integration step, and the
+alerts are best seen live in the Prometheus UI at this scale.
 
-## Alert rules — `monitoring/alerting/rules.yml`
+## Alert rules, `monitoring/alerting/rules.yml`
 
 Three alerts, all under one group `fraud_detection`. Read
 `rules.yml:4-33`.
 
-### `HighFraudRate` — `rules.yml:4-13`
+### `HighFraudRate`, `rules.yml:4-13`
 
 ```yaml
 expr: |
@@ -114,7 +113,7 @@ severity: warning
   for at least 2 minutes.
 - **Why 10%.** The real-world baseline from the training set is
   0.17%. Even with classifier miscalibration, a healthy system runs
-  at a few percent. 10% is the "definitely something's wrong" line —
+  at a few percent. 10% is the "definitely something's wrong" line,
   either traffic is unusually fraudulent, or the model is
   over-predicting (e.g. after a bad deploy).
 - **Why 2m.** One-off burst of fraud requests (e.g. someone testing
@@ -122,10 +121,10 @@ severity: warning
   *sustained* elevation is the signal worth investigating.
 - **Honest critique.** At 0.17% baseline, 10% is a very wide margin.
   A production system might set this at 2% and tune it against the
-  real rate. 10% works for a portfolio because synthetic test traffic
+  real rate. 10% works here because synthetic test traffic
   would never cross it accidentally.
 
-### `HighInferenceLatency` — `rules.yml:15-24`
+### `HighInferenceLatency`, `rules.yml:15-24`
 
 ```yaml
 expr: histogram_quantile(0.99, rate(inference_latency_seconds_bucket[5m])) > 0.5
@@ -140,16 +139,16 @@ severity: warning
   ones looks fine on average but is terrible for users. p99 forces
   the tail into view.
 - **Why 500ms.** XGBoost + SHAP is typically 5-80ms. 500ms would mean
-  something is clearly wrong — GC pause, disk IO, something hanging
+  something is clearly wrong, GC pause, disk IO, something hanging
   the worker.
 - **Honest critique.** `histogram_quantile` is an estimate based on
   the histogram buckets defined in `serving/app/metrics.py:9`
   (`[5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s]`). Everything
   above 500ms falls into the 1s bucket, so p99 > 500ms could really
-  be p99 = 700ms or p99 = 990ms — you can't tell. If you wanted finer
+  be p99 = 700ms or p99 = 990ms, you can't tell. If you wanted finer
   detail at the tail, you'd add buckets at 700ms, 850ms, 1500ms, 3s.
 
-### `InferenceErrorSpike` — `rules.yml:26-33`
+### `InferenceErrorSpike`, `rules.yml:26-33`
 
 ```yaml
 expr: rate(inference_errors_total[5m]) > 0.1
@@ -159,7 +158,7 @@ severity: critical
 
 - **What it means.** More than 0.1 errors per second, sustained 1
   minute. At 1 request/s that's 10% error rate.
-- **Why `critical`**. Errors mean the model threw an exception — bad
+- **Why `critical`**. Errors mean the model threw an exception, bad
   input that escaped validation, a loaded model is corrupt, OOM in
   SHAP. These are never normal.
 - **Honest critique.** An absolute rate (not a ratio against total
@@ -168,21 +167,21 @@ severity: critical
   (broken). A ratio-based expression (like the fraud rate above)
   would be more robust.
 
-## Grafana — `monitoring/grafana/provisioning/`
+## Grafana, `monitoring/grafana/provisioning/`
 
 Fully auto-provisioned. Two YAML files point Grafana at its config:
 
-- **`datasources/datasource.yml`** (9 lines) — registers Prometheus at
+- **`datasources/datasource.yml`** (9 lines), registers Prometheus at
   `http://prometheus:9090` (Docker DNS; `fraud-net` resolves this).
   Marked `isDefault: true` so dashboard panels can omit the datasource
   ref.
-- **`dashboards/dashboard.yml`** (7 lines) — tells Grafana to load any
+- **`dashboards/dashboard.yml`** (7 lines), tells Grafana to load any
   JSON file under `dashboards/` into a folder named `Monitoring`.
 
 The actual dashboard is a single JSON file,
 `dashboards/fraud_detection.json`, containing four panels.
 
-### Panel 1 — Request Rate (`fraud_detection.json:10-33`)
+### Panel 1, Request Rate (`fraud_detection.json:10-33`)
 
 ```promql
 rate(inference_total[1m])
@@ -195,7 +194,7 @@ steady? Is the champion getting most of it (it should, at 80/20)? Are
 fraud predictions a thin strip at the bottom (yes, baseline) or
 anything else (suspicious)?
 
-### Panel 2 — Fraud Rate (`fraud_detection.json:35-69`)
+### Panel 2, Fraud Rate (`fraud_detection.json:35-69`)
 
 ```promql
 100 * rate(inference_total{prediction="fraud"}[5m]) / rate(inference_total[5m])
@@ -204,19 +203,19 @@ anything else (suspicious)?
 Single-value stat panel. Thresholds: green < 5%, yellow 5-10%, red >
 10%. The red threshold lines up with the `HighFraudRate` alert.
 
-### Panel 3 — p99 Inference Latency (`fraud_detection.json:71-107`)
+### Panel 3, p99 Inference Latency (`fraud_detection.json:71-107`)
 
 Two queries on the same panel:
 
-- **p99** — `histogram_quantile(0.99, rate(inference_latency_seconds_bucket[5m])) * 1000`
-- **p50** — same with `0.50`
+- **p99**, `histogram_quantile(0.99, rate(inference_latency_seconds_bucket[5m])) * 1000`
+- **p50**, same with `0.50`
 
 Plotted in milliseconds. Having both on one chart makes it easy to see
 whether the tail is diverging from the median (sign of GC, concurrent
 contention, etc). Thresholds: green < 200ms, yellow 200-500ms, red >
 500ms (matches the alert rule).
 
-### Panel 4 — A/B Traffic Split (`fraud_detection.json:109-134`)
+### Panel 4, A/B Traffic Split (`fraud_detection.json:109-134`)
 
 ```promql
 ab_test_assignments_total
@@ -239,7 +238,7 @@ last hour.
 (default `admin`), password from `GF_SECURITY_ADMIN_PASSWORD` (default
 `change_me_grafana`). Set these in `.env` before exposing to anyone.
 
-## Evidently drift report — `scripts/drift_report.py`
+## Evidently drift report, `scripts/drift_report.py`
 
 Offline and manual. Triggered with `make drift-report`.
 
@@ -249,10 +248,10 @@ Offline and manual. Triggered with `make drift-report`.
    (the training distribution).
 2. Looks for `data/reports/current.parquet` as **current data** (what
    serving has been seeing). If absent, falls back to a 10% sample of
-   the reference data — a sanity check that the report runs, not a
+   the reference data, a sanity check that the report runs, not a
    meaningful drift signal.
 3. Drops the `Class` column (drift on the label isn't what we want
-   here — we want feature drift).
+   here, we want feature drift).
 4. Runs Evidently's `DataDriftPreset`, which statistically compares
    each feature's distribution across the two datasets.
 5. Saves an HTML report to `data/reports/drift_report.html`.
@@ -278,7 +277,7 @@ intended workflow is:
 In a production system, FastAPI would write every prediction to a
 Kafka topic or a SQL table; a nightly job would aggregate the last N
 days into `current.parquet`; `drift-report` would run as an Airflow
-DAG. This project stops short of that pipeline on purpose — the
+DAG. This project stops short of that pipeline on purpose, the
 report is a *template* for how you'd wire it, not a running pipeline.
 
 ### Why KS and chi-squared
@@ -305,7 +304,7 @@ Three reasons:
    15s on 30 features is wasteful.
 2. **Different storage.** Drift needs a distribution snapshot
    (thousands of samples), not a single scalar. Prometheus histograms
-   can approximate but are lossy — Evidently wants the raw values.
+   can approximate but are lossy, Evidently wants the raw values.
 3. **Different audience.** Live metrics are for on-call. Drift reports
    are for the ML team doing a quarterly review or investigating a
    suspected model quality drop.
@@ -322,16 +321,16 @@ seconds.
 | `HighInferenceLatency` firing | GC pause; SHAP on many requests; oversized batches | Grafana p99/p50 split; container memory |
 | `InferenceErrorSpike` firing | Feature schema mismatch; model loaded in degraded state | FastAPI logs; `/health` endpoint |
 | Fraud rate quietly at 0% | `is_fraud` threshold too high; champion promotion used wrong threshold | `/models` → check `threshold` metric logged in MLflow |
-| A/B split drifted from 80/20 | A/B router bug; one model in degraded state | `/health` — if one model is `unavailable`, the fallback in `_select_model` sends all traffic to the other |
+| A/B split drifted from 80/20 | A/B router bug; one model in degraded state | `/health`, if one model is `unavailable`, the fallback in `_select_model` sends all traffic to the other |
 | Evidently report shows drift on `amount_log` | Payment patterns changed (seasonal, holidays) | Consider retrain |
-| Drift on V1–V28 | Real population shift in underlying features | Likely retrain; don't just re-scale |
+| Drift on V1-V28 | Real population shift in underlying features | Likely retrain; don't just re-scale |
 
 ## Limitations
 
 - **Scrape interval granularity.** 15 seconds is good for rates, bad
   for debugging single slow requests. Individual slow calls are lost
   in the aggregation.
-- **Static alert thresholds.** 10% fraud rate, 500ms p99, 0.1 err/s —
+- **Static alert thresholds.** 10% fraud rate, 500ms p99, 0.1 err/s,
   hardcoded. A real system would learn baselines or compare against
   last-week-same-time.
 - **No AlertManager.** Alerts fire but don't route. Add AlertManager
@@ -353,11 +352,11 @@ seconds.
 
 ## Where to go next
 
-- [08 — Testing and CI](08-testing-and-ci.md) for how the metrics
+- [08, Testing and CI](08-testing-and-ci.md) for how the metrics
   module is tested and how integration tests verify the scrape path
   end-to-end.
 - [06 § Custom Prometheus metrics](06-serving-api.md#custom-prometheus-metrics--servingappmetricspy)
   is the source-of-truth on the four metrics this dashboard reads.
-- [10 — Limitations and extensions](10-limitations-and-extensions.md)
-  covers what you'd add first — AlertManager + Slack routing is
+- [10, Limitations and extensions](10-limitations-and-extensions.md)
+  covers what you'd add first, AlertManager + Slack routing is
   usually top of the list.

@@ -1,18 +1,18 @@
-# 10 — Limitations and extensions
+# 10, Limitations and extensions
 
 > **What this page answers:** What's deliberately imperfect about this
-> project, what you'd change before shipping, what you might build
-> next, and how to talk about it in an interview.
+> project, what you'd change before shipping, and what you might build
+> next.
 
-This is the single most honest page in the wiki. If you only read one
-page before a recruiter conversation, read this one.
+This is the most honest page in the wiki. It consolidates every
+"Limitations" section from the other pages into one ranked list.
 
 ## Known trade-offs, ranked by "would bite in production"
 
 Grouped by severity. Each item links back to the page where the
 issue is discussed in context.
 
-### Critical for production, acceptable for portfolio
+### Critical for production, acceptable at this scale
 
 1. **Training-serving skew on `amount_zscore`.** The single-row
    serving path uses `amount_zscore = 0.0` because a 1-row batch has
@@ -30,9 +30,9 @@ issue is discussed in context.
    Prometheus then discarded. Without a prediction log you can't
    audit decisions, compute true quality offline, or feed a drift
    report automatically. Write each prediction to Postgres (or
-   Kafka → S3) with inputs, output, model version, and timestamp.
+   Kafka, S3) with inputs, output, model version, and timestamp.
 5. **Alerts fire but don't route.** No AlertManager, no Slack/email.
-   Fine for a laptop; blind in production. ([07](07-monitoring.md#no-alertmanager))
+   Fine on a laptop; blind in production. ([07](07-monitoring.md#no-alertmanager))
 6. **`.env` is plain text.** Secrets should come from a secret
    manager at runtime, not from a file on disk. ([03](03-infrastructure.md#env-and-secrets-hygiene))
 
@@ -43,17 +43,17 @@ issue is discussed in context.
 8. **No cross-validation.** A single 80/20 split is noisy when you
    only have 492 frauds. CV would give more stable PR-AUC. ([05](05-training.md#limitations))
 9. **Single serving instance.** One container, one worker. Any real
-   load or high-availability story needs gunicorn + multiple
+   load or high-availability setup needs gunicorn + multiple
    uvicorn workers, then horizontal scaling. ([06](06-serving-api.md#limitations))
 10. **No graceful model reload.** Promoting a new champion in MLflow
     doesn't propagate until `docker compose restart serving`.
     A polling or webhook-based reload would fix this. ([06](06-serving-api.md#limitations))
 11. **Evidently drift is offline and manual.** `make drift-report`
     when you remember; no ingestion pipeline for serving data; no
-    trend across reports. Wire prediction logs → daily report →
+    trend across reports. Wire prediction logs, daily report,
     alert. ([07](07-monitoring.md#what-current-data-means-here))
-12. **Static alert thresholds.** 10% fraud rate, 500ms p99, 0.1 err/s
-    — hand-picked. A real system would learn or compare against
+12. **Static alert thresholds.** 10% fraud rate, 500ms p99, 0.1 err/s,
+    hand-picked. A real system would learn or compare against
     last-week-same-time. ([07](07-monitoring.md#limitations))
 13. **Retrain DAG only retrains XGBoost.** The autoencoder is
     trained manually and not on a schedule. Adding a second branch
@@ -113,86 +113,39 @@ order:
    champion in production but score on challenger for N days and
    compare offline before moving the alias.
 
-## Possible portfolio extensions
+## Possible extensions
 
-Things you could build *next* to extend the story, each with a
-one-line recruiter pitch:
+Directions the project could grow in next:
 
-- **Kafka streaming ingress** — "Turned the static batch pipeline
-  into a streaming pipeline with Kafka producer + Go consumer;
-  shows event-driven architecture on top of the same ML stack." The
+- **Kafka streaming ingress.** Turn the static batch pipeline into a
+  streaming pipeline with a Kafka producer and a Go consumer. The
   commented stubs at `docker-compose.yml:107-168` are the starting
   point.
-- **Feast feature store** — "Added Feast to eliminate training-
-  serving feature skew and serve online features with sub-millisecond
-  reads." Good for discussing feature store trade-offs.
-- **Deploy to a cloud** — ECS / GKE / Cloud Run. Shows you can go
-  from compose to managed infra. Pick one that matches the job
-  you're applying for.
-- **Hyperparameter sweep with Optuna** — "Added a 100-trial Optuna
-  sweep; integrated with MLflow nested runs; improved PR-AUC by
-  3-5%." Quantifiable.
-- **Time-aware cross-validation** — "Replaced the random 80/20
-  split with a TimeSeriesSplit; the honest PR-AUC is lower but no
-  longer optimistic."
-- **LLM-assisted fraud reasoning** — "Added a `POST
-  /predict/explain` endpoint that feeds SHAP contributions into a
-  small LLM and returns a natural-language rationale." Current-year
-  addition.
-- **Alertmanager + Slack** — small, clean, visible. Adds one
-  container plus a two-line webhook config.
-- **pgvector for similarity search** — store recent transactions as
-  embeddings, flag new transactions by nearest-neighbour distance
-  to past fraud. Complements the two existing models as a third
-  paradigm (retrieval-based).
-- **Drift-triggered retraining** — `drift_report.py` → Evidently →
-  if drift detected → trigger the retrain DAG. Closes the loop.
-
-## Interview talking-points cheat-sheet
-
-Seven bullets you can say out loud, in order, to summarise the
-project in under two minutes:
-
-1. **The problem is imbalanced binary classification** — 0.17%
-   fraud in a 284,807-row dataset, so accuracy is meaningless and
-   PR-AUC is the honest metric. I handle the imbalance with three
-   layered techniques: SMOTE on the training split,
-   `scale_pos_weight` inside XGBoost, and a cost-weighted threshold
-   calibration where missing a fraud is 10× worse than a false
-   alarm.
-2. **Two models, two paradigms, one API.** A supervised XGBoost as
-   the champion and a PyTorch autoencoder as the unsupervised
-   challenger. Running both lets me A/B test and demonstrates
-   that supervised and anomaly-detection approaches are
-   complementary.
-3. **A/B routing is deterministic.** MD5 of the transaction ID modulo
-   100, so the same transaction always hits the same model — this
-   is what makes fair offline comparison possible.
-4. **SHAP is warmed up at startup** and added to every XGBoost
-   response. I use `TreeExplainer` because it's exact and
-   polynomial-time on tree models; the autoencoder returns empty
-   because `TreeExplainer` only works on trees.
-5. **MLflow aliases, not versions, are the deploy contract.** Serving
-   resolves `models:/fraud-xgboost@champion` at startup, so
-   promoting a new version is one MLflow API call — zero serving
-   code change. The retrain DAG promotes conditionally: new
-   PR-AUC must beat the champion.
-6. **Monitoring stack is Prometheus + Grafana + Evidently.**
-   Prometheus does live rates and tail latency with a 15s scrape;
-   Grafana renders four auto-provisioned panels; Evidently is the
-   offline drift report. They're separate because they answer
-   different questions at different cadences.
-7. **I know what I cut.** No Kafka, no Feast, no Kubernetes, no
-   Isolation Forest. Each was considered and rejected because it
-   would add infra without moving the ML story forward. The
-   commented stubs in `docker-compose.yml` show exactly where Kafka
-   would plug in — they're a portfolio signal that I made a
-   deliberate choice, not that I didn't know.
+- **Feast feature store.** Eliminate training-serving feature skew and
+  serve online features with sub-millisecond reads.
+- **Deploy to a cloud.** ECS, GKE, or Cloud Run. Takes the stack from
+  compose to managed infra.
+- **Hyperparameter sweep with Optuna.** Integrated with MLflow nested
+  runs, targeting PR-AUC.
+- **Time-aware cross-validation.** Replace the random 80/20 split
+  with a `TimeSeriesSplit`; the honest PR-AUC is lower but no longer
+  optimistic.
+- **LLM-assisted fraud reasoning.** A `POST /predict/explain`
+  endpoint that feeds SHAP contributions into a small LLM and
+  returns a natural-language rationale.
+- **AlertManager + Slack.** Small, clean, visible. One container plus
+  a two-line webhook config.
+- **pgvector for similarity search.** Store recent transactions as
+  embeddings and flag new transactions by nearest-neighbour distance
+  to past fraud. Complements the two existing models with a
+  retrieval-based paradigm.
+- **Drift-triggered retraining.** `drift_report.py`, Evidently, if
+  drift detected then trigger the retrain DAG. Closes the loop.
 
 ## What's explicitly out of scope (summary)
 
-From the original `plan.md` decision log (lines 702-725), repeated
-here for a recruiter conversation:
+From the original `plan.md` decision log, repeated here for quick
+reference:
 
 | Omitted | One-line reason |
 |---|---|
@@ -200,15 +153,15 @@ here for a recruiter conversation:
 | Feast feature store | One data source + one pipeline; Feast would be cargo-cult |
 | Kubernetes | Single-node Compose is more honest for the actual scale |
 | Isolation Forest | XGBoost + autoencoder already cover supervised + unsupervised |
-| Real auth on the API | In-network portfolio service; auth is the first production add |
-| AlertManager + Slack | Alerts visible in Prometheus UI; routing is one-step away |
+| Real auth on the API | In-network service; auth is the first production add |
+| AlertManager + Slack | Alerts visible in Prometheus UI; routing is one step away |
 | Hyperparameter sweep | Meaningful only against a time-based split, which is also missing |
 | Cross-validation | Same reason as above; next thing to add |
 
 ## Where to go next
 
-- Back to [01 — Big picture](01-big-picture.md) for the overall
+- Back to [01, Big picture](01-big-picture.md) for the overall
   architecture.
-- [02 — ML concepts](02-ml-concepts.md) if any ML term on this page
+- [02, ML concepts](02-ml-concepts.md) if any ML term on this page
   still feels fuzzy.
 - [README](README.md) to see the wiki ToC and reading order.
