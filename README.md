@@ -97,14 +97,18 @@ docker compose up -d
 
 # 4. Run the data ingestion pipeline
 # Trigger the 'data_ingestion' DAG in Airflow UI → http://localhost:8080
-# (user: airflow, password: airflow)
+# (user: admin, password: admin)
 
 # 5. Train both models
 make venv-training
 bash scripts/run_training.sh
 # MLflow UI → http://localhost:5000, experiments and registered models appear here
 
-# 6. Make your first prediction
+# 6. Reload the serving container so it picks up the new champion model
+# (models are loaded once at startup, and step 3 started serving before any existed)
+docker compose restart serving
+
+# 7. Make your first prediction
 curl -s -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{

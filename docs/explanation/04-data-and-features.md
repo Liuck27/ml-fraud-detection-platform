@@ -280,50 +280,65 @@ without re-running the pipeline.
 
 ## The `retrain` DAG
 
-File: `airflow/dags/retrain_dag.py` (165 lines).
+File: `airflow/dags/retrain_dag.py` (150 lines).
 
 ```
 validate_features  >>  train_xgboost  >>  evaluate_and_promote
 ```
 
-Schedule: `@weekly` (`retrain_dag.py:147`), a realistic cadence for
-fraud model refreshes. You can also trigger manually.
+Schedule: manual trigger only (`schedule=None` at `retrain_dag.py:133`).
+This is a demo stack that isn't continuously running, so a cron schedule
+would only accumulate failed runs between sessions. In production you
+would set e.g. `@weekly` — a realistic cadence for fraud model
+refreshes; the schedule is a one-line change, and the interesting part
+(the gated promotion below) is identical either way.
 
-### Task 1, `validate_features` (`retrain_dag.py:44-63`)
+### Task 1, `validate_features` (`retrain_dag.py:54-73`)
 
 Checks `data/processed/features.parquet` exists and has all expected
 columns (V1-V28, `Amount`, `Class`, plus the five engineered features
-defined at `retrain_dag.py:33-41`).
+defined at `retrain_dag.py:43-51`).
 
-### Task 2, `train_xgboost` (`retrain_dag.py:66-86`)
+### Task 2, `train_xgboost` (`retrain_dag.py:76-108`)
 
 Runs `training/train_xgboost.py` as a **subprocess** inside the Airflow
-container. This is a deliberate shortcut with a honest caveat right in
-the docstring (`retrain_dag.py:10-14`):
+container. This works because `./training` is volume-mounted read-only
+at `/opt/airflow/training` (`docker-compose.yml`) and the Airflow image
+installs the training dependencies — scikit-learn, xgboost,
+imbalanced-learn, mlflow, matplotlib, pinned to match
+`training/requirements.txt` (`airflow/Dockerfile`). Torch is deliberately
+excluded: the DAG only retrains XGBoost.
+
+This is a deliberate shortcut with an honest caveat right in the
+docstring (`retrain_dag.py:20-23`):
 
 > In a production deployment you would replace this with a
 > DockerOperator or KubernetesPodOperator pointing at a dedicated
 > training image that has xgboost, torch, and imbalanced-learn
 > installed.
 
-Running training as a subprocess means the Airflow venv needs the
-training dependencies, which puffs up the Airflow image. A real
-production setup would hand the work off to a separate training
-container so Airflow stays a pure orchestrator.
+Running training as a subprocess means the Airflow image carries the
+training dependencies, which puffs it up. A real production setup
+would hand the work off to a separate training container so Airflow
+stays a pure orchestrator.
 
-### Task 3, `evaluate_and_promote` (`retrain_dag.py:89-140`)
+### Task 3, `evaluate_and_promote` (`retrain_dag.py:111-126`)
 
-The interesting part. After training finishes, the new model is
-registered in MLflow but *not* automatically promoted. This task:
+The interesting part. The training script deliberately only *registers*
+a new model version — it never moves the `champion` alias itself (see
+[05 § Registration vs. promotion](05-training.md)). This task is the
+quality gate, and it delegates to **the same function** host-side runs
+use: `promote_champion_if_better` in `training/model_registry.py:42-90`
+(importable thanks to the volume mount). The rule:
 
-1. Finds the just-registered version of `fraud-xgboost`
-   (`retrain_dag.py:103-110`).
-2. Reads its PR-AUC from MLflow (`retrain_dag.py:111-112`).
-3. Reads the *current* champion's PR-AUC (`retrain_dag.py:115-122`).
-4. If the new version's PR-AUC ≥ champion's, promotes to `champion`
-   alias (`retrain_dag.py:130-135`).
-5. Otherwise keeps the existing champion and logs why
-   (`retrain_dag.py:136-140`).
+1. Find the just-registered version of `fraud-xgboost`.
+2. If no champion exists yet, promote unconditionally (first run).
+3. Otherwise promote only if the new version's PR-AUC is at least as
+   good as the current champion's; if not, keep the champion and log why.
+
+One gate, two entry points: `make promote` (called automatically by
+`scripts/run_training.sh`) on the host, and this task inside Airflow.
+The promotion rule can never silently diverge between the two paths.
 
 This is the production-grade pattern: **don't auto-promote without a
 quality gate**. Using the `champion` alias (rather than hardcoding a

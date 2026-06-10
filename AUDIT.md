@@ -1,0 +1,332 @@
+# Project Audit Report
+
+Full review of the ML fraud detection platform: training code, serving API, Airflow DAGs,
+Docker/compose setup, monitoring, CI, tests, and documentation. Static analysis plus a run
+of both unit test suites (14 serving + 7 training, all passing). The original audit did not
+run the full Docker stack; the H1 fix work later did (live DAG runs, serving predictions),
+which surfaced one additional issue (MLflow artifact misconfiguration, documented under H1).
+
+## Status (updated 2026-06-10)
+
+| Finding | State |
+|---|---|
+| H1 retrain DAG cannot run | **FIXED** (training mount + deps, py3.11 image; verified end-to-end twice) |
+| H2 dead promotion gate | **FIXED** (register-only training, shared `promote_champion_if_better` gate) |
+| H3 broken fraud-rate alert | **FIXED** (`sum()` wrappers, promtool-validated) |
+| M8 phantom-phase template leftovers | **FIXED** (stubs and Kafka compose blocks deleted) |
+| M9 broken README quickstart | **FIXED** (correct Airflow creds, serving restart step) |
+| Bonus: MLflow artifacts written client-side | **FIXED** (proxied `mlflow-artifacts:/` scheme; see H1 resolution) |
+| M1-M7 | open |
+| L1-L11 | open |
+
+**Overall verdict:** the architecture is genuinely sound and matches industry practice.
+The scope decisions (no Kafka, no Kubernetes, Evidently as a script) are well-reasoned and
+well-documented. The serving code is clean, the A/B routing is correct, the scaler artifact
+is properly versioned alongside the model, and the wiki is unusually honest about
+limitations. This is a good portfolio project. However, the audit found three High-severity
+issues where the code did not do what the documentation claims it does — exactly the kind
+of thing a technical interviewer would find — plus a set of Medium issues worth fixing or
+at least being able to explain. (All three HIGH findings have since been fixed; see the
+status table above and the resolution notes inline.)
+
+Severity levels:
+
+- **HIGH** — broken functionality, or documentation that claims the opposite of what the code does
+- **MEDIUM** — real ML/engineering flaws; fix them, or be prepared to defend them
+- **LOW** — polish, consistency, hygiene
+
+---
+
+## HIGH severity
+
+### H1. The retrain DAG cannot actually run — FIXED 2026-06-10
+
+> **Resolution (Option A: mount + deps):** `./training` is now volume-mounted read-only at
+> `/opt/airflow/training`, and `airflow/Dockerfile` installs the training deps (scikit-learn,
+> xgboost, imbalanced-learn, mlflow, matplotlib — no torch) pinned to
+> `training/requirements.txt` versions. The base image was switched to
+> `apache/airflow:2.7.3-python3.11` because the default ships Python 3.8, too old for those
+> pins (3.11 also matches the host training venv exactly). The DAG's `evaluate_and_promote`
+> now imports the shared `promote_champion_if_better` instead of an inlined copy, and the
+> train task captures subprocess stdout/stderr into the Airflow log. Verified end-to-end
+> twice: validate → train → gated promotion all green, new champion (v3, then v4) loaded by
+> serving and predicting via `/predict`.
+>
+> **Discovered while testing (and fixed):** the MLflow server was started with
+> `--default-artifact-root ./mlartifacts`, a server-local path. Experiments recorded
+> `/app/mlartifacts/<id>` and every client treated it as a path on its *own* machine —
+> host training had been silently writing artifacts to `C:\app\mlartifacts` on the
+> laptop (safe to delete), and the volume copies that made serving work had been copied
+> in manually at some point (identical mtimes). On a Linux host the quickstart would
+> crash with `PermissionError: /app`. Fixed by switching the server to proxied artifacts
+> (`--serve-artifacts --artifacts-destination ${MLFLOW_ARTIFACT_ROOT}
+> --default-artifact-root mlflow-artifacts:/`) so all clients upload/download over HTTP
+> through the server; existing experiments were migrated via SQL
+> (`UPDATE experiments SET artifact_location = 'mlflow-artifacts:/' || experiment_id`).
+> Serving keeps the volume mount only for pre-fix model versions with absolute-path URIs.
+
+`airflow/dags/retrain_dag.py` runs `training/train_xgboost.py` as a subprocess inside the
+Airflow container, but:
+
+1. `docker-compose.yml` mounts only `./airflow/dags`, `./airflow/plugins`, and `./data`
+   into the Airflow containers. `./training` is never mounted, so
+   `/opt/airflow/training/train_xgboost.py` does not exist → task 2 fails with
+   `FileNotFoundError` on every run.
+2. Even if it were mounted, the Airflow image (`airflow/Dockerfile`) installs only
+   `pandas` and `pyarrow`. The training script needs `xgboost`, `scikit-learn`,
+   `imbalanced-learn`, `matplotlib`, and `mlflow` → `ImportError`.
+3. Task 3 (`evaluate_and_promote`) does `import mlflow` — also not installed in the
+   Airflow image → fails even if training were skipped.
+
+The DAG also has `schedule="@weekly"`, so on a long-running stack it will fail visibly
+every week in the Airflow UI.
+
+**Fix options** (pick one):
+- (a) Mount `./training` in `x-airflow-common` and add the training deps to
+  `airflow/Dockerfile` (heavyweight, but makes the demo real).
+- (b) Honest-demo route: change the DAG to clearly document that the train task requires
+  the training deps, and validate that in code with a clear error message.
+- (c) Best practice: use `DockerOperator` to run training in the training image, as the
+  DAG docstring itself suggests.
+
+### H2. The champion promotion gate is dead code, and the wiki claims otherwise — FIXED 2026-06-10
+
+**Resolution:** `train_xgboost.py` now only registers; the gate lives in
+`model_registry.promote_champion_if_better`, exposed via `scripts/promote_model.py` /
+`make promote` and called by `run_training.sh`. The DAG's `evaluate_and_promote` task is
+now the real (and only) in-Airflow gate. The retrain DAG was also switched to manual
+trigger (`schedule=None`) per the demo-vs-production decision; wiki, READMEs, and
+comments updated. The autoencoder keeps unconditional `challenger` promotion by design
+(challenger = latest candidate), documented in code and wiki.
+
+Original finding:
+
+`training/train_xgboost.py:181-187` **unconditionally** promotes the just-trained model to
+`champion` at the end of every run. The retrain DAG's `evaluate_and_promote` task then
+compares "latest version" vs "current champion" — but they are now the same version, so
+`new_pr_auc >= champ_pr_auc` is always true (comparing a run to itself). The quality gate
+can never reject a model.
+
+Worse, the wiki (`docs/explanation/04-data-and-features.md:316-317`) states: "After
+training finishes, the new model is registered in MLflow but *not* automatically promoted"
+— this is factually wrong, and it's presented as "the production-grade pattern". If you
+say this in an interview and the interviewer opens `train_xgboost.py`, it falls apart.
+
+**Fix:** remove the `promote_to_champion` call from `train_xgboost.py` (make the script
+register only), and let promotion happen exclusively in the DAG's gated task. Provide a
+`make promote-champion` or a `--promote` flag for the standalone/first-run case. Update
+the wiki section. (Same consideration applies to `train_autoencoder.py` and `challenger`,
+though there is no gate there to contradict.)
+
+### H3. The `HighFraudRate` Prometheus alert is mathematically always 100% — FIXED 2026-06-10
+
+**Resolution:** expression rewritten with `sum()` on both sides, validated with
+`promtool check rules` (3 rules pass). Wiki section in `07-monitoring.md` updated with
+an explanation of the PromQL vector-matching pitfall.
+
+Original finding:
+
+`monitoring/alerting/rules.yml`:
+
+```promql
+rate(inference_total{prediction="fraud"}[5m]) / rate(inference_total[5m]) > 0.10
+```
+
+PromQL binary operations match series label-for-label. The left side has series labeled
+`{model_name, prediction="fraud"}`; the right side contains that exact same series, so
+each fraud series is divided by itself → the ratio is always 1 whenever any fraud
+prediction occurs. The alert fires on any nonzero fraud traffic, not at a 10% rate.
+
+The Grafana dashboard's fraud-rate panel does this correctly (`100 * sum(rate(...))`),
+so the fix is to mirror it:
+
+```promql
+sum(rate(inference_total{prediction="fraud"}[5m]))
+/ sum(rate(inference_total[5m])) > 0.10
+```
+
+---
+
+## MEDIUM severity
+
+### M1. `amount_zscore` is leaky in training and dead weight in serving
+
+In training data, `amount_zscore` is computed by `compute_interaction_features` over the
+**entire dataset** before the train/val split (mild data leakage: validation rows
+contribute to the mean/std the model trains on). At serving time,
+`loader.prepare_features` hardcodes it to `0.0` — so the model receives a feature at
+inference that never matches what it saw in training (train/serve skew). The wiki
+documents this as a "quirk," but the defensible engineering answer is to fix it:
+
+- **Simplest:** drop `amount_zscore` from `FEATURE_COLS` entirely. It is redundant —
+  `amount_log` carries the signal, and the downstream `StandardScaler` already
+  standardizes it.
+- **Alternative:** freeze training-set mean/std as model artifacts (like the scaler) and
+  apply them at serving.
+
+### M2. `scale_pos_weight` is a silent no-op, and SMOTE + class weighting double-counts
+
+`train_xgboost.py:train()` computes `scale_pos_weight = n_neg / n_pos` on the **already
+SMOTE-resampled** data, where classes are balanced 1:1 — so it is ≈ 1.0 and does nothing.
+The comment "belt-and-suspenders alongside SMOTE" describes intent the code doesn't
+implement. Conceptually, using both SMOTE *and* `scale_pos_weight` would double-correct
+the imbalance anyway. Pick one strategy and make the code say so:
+
+- Either SMOTE alone (delete the `scale_pos_weight` computation), or
+- `scale_pos_weight` computed on the original training distribution, without SMOTE
+  (in practice this often performs equally well on this dataset and is cheaper).
+
+This is a classic interview probe ("why both?") — currently the code has no good answer.
+
+### M3. Threshold is tuned and evaluated on the same validation set
+
+Both training scripts call `find_optimal_threshold(y_val, …)` and then report
+`compute_metrics(y_val, …, threshold=…)` on the **same** split. The reported F1/precision/
+recall are optimistically biased, and the promotion gate compares models on the same data
+their thresholds were tuned on. Standard fix: three-way split (train / val for threshold
+tuning / held-out test for reported metrics), or tune the threshold via cross-validation
+on the training set.
+
+### M4. `Time` default silently flips `is_night` on, contradicting the schema docs
+
+`serving/app/schemas.py` documents: "when omitted hour_of_day defaults to 0 and is_night
+to False". But hour 0 satisfies `hour_of_day < 6`, so `prepare_features` sets
+`is_night=True`. Any client that omits `Time` gets a midnight transaction with a night
+flag — a silent feature distortion. Fix: either make `Time` required (cleanest for a
+fraud model) or fix the docstring and accept the semantics deliberately.
+
+### M5. `prepare_features_batch` is dead code with divergent semantics
+
+`POST /predict/batch` loops and calls the single-row `prepare_features` per transaction;
+`prepare_features_batch` (which computes `amount_zscore` over the request batch) is never
+called by any route. If it were used, the same transaction would get different scores
+depending on what else was in the batch. Delete it (or wire it in deliberately after
+resolving M1). Dead code with a subtle behavioral difference is a red flag in review.
+
+### M6. `serving/Dockerfile` copies the multi-GB venv into the image
+
+`COPY . /app/serving/` with no `.dockerignore` means `serving/.venv/` (torch ≈ several GB
+on disk) and `serving/tests/` are sent as build context and baked into the image. Add a
+`serving/.dockerignore` with at least `.venv`, `tests`, `__pycache__`.
+
+### M7. CI contradicts the project's own documentation
+
+- `CLAUDE.md` says "mypy is enforced in CI", but `.github/workflows/ci.yml` sets
+  `continue-on-error: true` on the typecheck job — it can never fail the build.
+- CI runs only `serving/tests/`; `training/tests/test_evaluate.py` is never executed in
+  CI (only via `make test` locally), even though it needs nothing heavier than numpy,
+  sklearn, and matplotlib.
+
+Fix: run training tests in CI, and either make typecheck blocking or change the docs to
+say it's advisory.
+
+### M8. Leftover "phantom phase" artifacts from a project template — FIXED 2026-06-10
+
+> **Resolution:** Deleted `tests/conftest.py` (stub), `tests/integration/test_kafka_flow.py`,
+> and `monitoring/evidently/drift_report.py`. Removed the ~64 lines of Zookeeper/Kafka/
+> producer/Go-consumer stubs from `docker-compose.yml` and rewrote the stale header.
+> Updated all wiki line references shifted by the deletion (01, 03, 06, 08, 10) and removed
+> every "commented stubs" / "Phase 8/9/11" mention; rewrote `monitoring/evidently/README.md`
+> to point at the real `scripts/drift_report.py` + `make drift-report` flow. The README's
+> "why no Kafka" rationale now stands alone, which is the stronger story.
+
+The plan defines 6 phases and explicitly rules Kafka out of scope, yet the repo contains:
+
+- `tests/integration/test_kafka_flow.py` — stub: "Implementation in Phase 11"
+- `tests/conftest.py` — stub: "Implementation in Phase 11"
+- `monitoring/evidently/drift_report.py` — stub: "Implementation in Phase 9" (the real
+  script is `scripts/drift_report.py`)
+- `docker-compose.yml` — ~60 lines of commented Zookeeper/Kafka/producer/Go-consumer
+  stubs marked "Uncomment in Phase 8", referencing a `streaming/` directory that doesn't
+  exist
+- `docker-compose.yml` header still says "Phase 1: PostgreSQL only (active)" although all
+  services are live
+
+Phases 8/9/11 exist nowhere in the plan. To a careful reader this signals the project was
+stamped from a template. Delete the stubs and the Kafka compose blocks (the README already
+explains why Kafka was excluded — that's the stronger story), and fix the compose header.
+
+### M9. README quickstart fails at two steps — FIXED 2026-06-10
+
+> **Resolution:** Step 4 now says `admin` / `admin` (matching the user seeded in
+> `docker-compose.yml`), and a new step 6 (`docker compose restart serving`) was inserted
+> after training, with a comment explaining that models are loaded once at startup.
+> The old step 6 (curl /predict) is now step 7.
+
+1. Step 4 says Airflow login is `airflow` / `airflow`; `docker-compose.yml` seeds
+   `admin` / `admin`.
+2. Step 6 (`curl /predict`) will fail: the serving container started in step 3, **before**
+   models existed in MLflow, and it only loads models at startup. The quickstart is
+   missing `docker compose restart serving` after step 5. (The integration test fixtures
+   know this — the README doesn't.)
+
+The plan's own acceptance criterion is "README quickstart works for a fresh clone."
+
+---
+
+## LOW severity
+
+- **L1.** `train_autoencoder.py` docstring says `Input(33)`, while `plan.md` and
+  `CLAUDE.md` say `Input(30) → 64 → …`. 33 is correct (28 V + 5 engineered); update the
+  plan/CLAUDE text.
+- **L2.** `retrain_dag.validate_features` reads the parquet with `columns=list(EXPECTED…)`
+  and then checks for missing columns — `read_parquet` would already have raised, so the
+  check is unreachable. Read without `columns=` or drop the check.
+- **L3.** `serving/requirements.txt` pins everything except `shap>=0.44`, directly under a
+  comment explaining why exact pins matter. Pin shap.
+- **L4.** `use_label_encoder=False` in `XGBClassifier` is a removed/no-op parameter in
+  XGBoost 2.x and produces a "Parameters: { use_label_encoder } are not used" warning.
+  Delete it.
+- **L5.** `predict.py` error counter uses label values `"champion"`/`"challenger"` for
+  `model_name`, while latency/total counters use full names like
+  `fraud-xgboost-champion`. Inconsistent label scheme makes PromQL joins across the
+  metrics awkward. Unify.
+- **L6.** `generate_drift_data.py` recomputes `is_night` as `hour_of_day < 6`, dropping
+  the 22:00–23:00 hours from the training definition. Cosmetic (synthetic data), but it
+  contradicts the canonical feature definition.
+- **L7.** The EDA notebook is committed with no executed outputs (all
+  `execution_count: null`), so on GitHub it renders without a single chart. For a
+  portfolio, commit it executed — the rendered plots are the point.
+- **L8.** The StandardScaler is fit on a DataFrame but applied to `df.values` at serving,
+  which triggers sklearn's "X does not have valid feature names" warning on every request.
+  Also note: scaling does nothing for XGBoost (trees are scale-invariant) — it's only
+  needed for the autoencoder. Worth being able to explain; optionally drop scaling from
+  the XGBoost pipeline.
+- **L9.** `plan.md` promises "fallback to local artifact cache if MLflow is unreachable";
+  the implementation does degraded mode + 503 instead (which is fine — update the plan).
+- **L10.** `find_optimal_threshold` re-thresholds the entire score array for every
+  candidate threshold — O(n²)-ish on a 57k-row validation set. Works, but a vectorized
+  cumulative-sum sweep is the textbook version; cheap interview win.
+- **L11.** The serving container has no compose healthcheck and only `service_started`
+  dependency on MLflow; a healthcheck on `/health` would make `make up` self-verifying.
+
+---
+
+## What is genuinely good (worth saying in interviews)
+
+- Correct leak-avoidance where it matters most: scaler fit on train only, SMOTE applied
+  only to the training split, autoencoder trained only on legit transactions, threshold
+  derived from a PR-curve cost sweep.
+- The fitted scaler and decision threshold are versioned with the model in MLflow and
+  reloaded by serving — that is real training/serving-skew thinking (the `amount_zscore`
+  feature aside).
+- Deterministic hash-based A/B routing, correctly implemented and well-tested, including
+  a distribution test.
+- Degraded-mode startup (API boots without models, 503s cleanly, health endpoint reports
+  per-model status) with fallback routing when one model is missing.
+- Sensible monitoring stack: custom Prometheus metrics with useful labels, provisioned
+  Grafana, alert rules (modulo H3), drift report with a synthetic-drift generator.
+- Isolated per-service venvs with documented reasons (Airflow's tightly pinned dependency
+  tree) — pinned, mutually consistent ML versions across training and serving.
+- Honest scope decisions, documented trade-offs, idempotent DB init, secrets kept out of
+  git, clean test suites that actually pass.
+
+## Suggested fix order
+
+1. ~~H2 (promotion gate) — small change, removes the biggest interview risk~~ DONE
+2. ~~H3 (alert expression) — one-line fix~~ DONE
+3. ~~M8 + M9 (template leftovers + README quickstart) — credibility and first impressions~~ DONE
+4. ~~H1 (retrain DAG runtime) — decide the strategy first (DockerOperator vs mounting)~~ DONE (mount + deps)
+5. M1 + M2 + M4 + M5 (feature/imbalance correctness) — then retrain and update metrics
+6. M3 (proper test split) — retrain once more, report honest metrics
+7. M6, M7, then the LOW list as time allows

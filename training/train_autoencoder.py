@@ -41,7 +41,7 @@ from evaluate import (
     plot_pr_curve,
     plot_roc_curve,
 )
-from model_registry import promote_to_challenger
+from model_registry import get_latest_version, promote_to_challenger
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -300,13 +300,11 @@ def main() -> None:
             f"threshold_error={threshold_error:.4f}"
         )
 
-    # Promote the newly registered version to challenger
-    from mlflow.tracking import MlflowClient
-
-    client = MlflowClient()
-    versions = client.search_model_versions(f"name='{MODEL_NAME}'")
-    latest = max(versions, key=lambda v: int(v.version))
-    promote_to_challenger(MODEL_NAME, latest.version)
+    # Promote the newly registered version to challenger — unconditionally, and
+    # deliberately so: 'challenger' means "the latest candidate under evaluation",
+    # so it always points at the newest version. Only the 'champion' alias is
+    # protected by a quality gate (see model_registry.promote_champion_if_better).
+    promote_to_challenger(MODEL_NAME, get_latest_version(MODEL_NAME))
 
 
 if __name__ == "__main__":

@@ -118,9 +118,7 @@ order:
 Directions the project could grow in next:
 
 - **Kafka streaming ingress.** Turn the static batch pipeline into a
-  streaming pipeline with a Kafka producer and a Go consumer. The
-  commented stubs at `docker-compose.yml:107-168` are the starting
-  point.
+  streaming pipeline with a Kafka producer and a Go consumer.
 - **Feast feature store.** Eliminate training-serving feature skew and
   serve online features with sub-millisecond reads.
 - **Deploy to a cloud.** ECS, GKE, or Cloud Run. Takes the stack from

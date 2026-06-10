@@ -32,17 +32,15 @@ scripts and notebooks for humans to run:
 
 | Service | Role | Port | Defined at |
 |---|---|---|---|
-| PostgreSQL | Metadata store for Airflow and MLflow | 5432 | `docker-compose.yml:27-48` |
-| MLflow | Experiment tracking + model registry | 5000 | `docker-compose.yml:52-74` |
-| Airflow (init / webserver / scheduler) | Data pipeline orchestration | 8080 | `docker-compose.yml:79-103` |
-| FastAPI serving | Real-time inference + A/B testing + SHAP | 8000 | `docker-compose.yml:171-188` |
-| Prometheus | Scrapes and stores metrics | 9090 | `docker-compose.yml:192-205` |
-| Grafana | Dashboards and alert visualisation | 3000 | `docker-compose.yml:209-221` |
+| PostgreSQL | Metadata store for Airflow and MLflow | 5432 | `docker-compose.yml:30-51` |
+| MLflow | Experiment tracking + model registry | 5000 | `docker-compose.yml:55-82` |
+| Airflow (init / webserver / scheduler) | Data pipeline orchestration | 8080 | `docker-compose.yml:87-111` |
+| FastAPI serving | Real-time inference + A/B testing + SHAP | 8000 | `docker-compose.yml:115-132` |
+| Prometheus | Scrapes and stores metrics | 9090 | `docker-compose.yml:136-149` |
+| Grafana | Dashboards and alert visualisation | 3000 | `docker-compose.yml:153-165` |
 
-Kafka, a Zookeeper, and a Go consumer are present as commented-out stubs
-(`docker-compose.yml:107-168`). They belong to a "Phase 8" that was
-deliberately skipped, see [Out of scope](#whats-deliberately-out-of-scope)
-below.
+Kafka, a Zookeeper, and a Go streaming consumer were deliberately left
+out, see [Out of scope](#whats-deliberately-out-of-scope) below.
 
 ## Data flow, end to end
 
@@ -138,7 +136,7 @@ build itself.
 
 | Omitted | Why it would have been bad to include here |
 |---|---|
-| **Kafka + streaming producer + Go consumer** | Adds three containers (Zookeeper, Kafka, producer) to fake a stream that is fundamentally a static CSV. Impressive infra, but buries the ML layer. Left as commented stubs in `docker-compose.yml:107-168`. |
+| **Kafka + streaming producer + Go consumer** | Adds three containers (Zookeeper, Kafka, producer) to fake a stream that is fundamentally a static CSV. Impressive infra, but buries the ML layer. |
 | **Feast (feature store)** | Feast solves training/serving skew across many data sources. This dataset is one CSV, one pipeline. Adding Feast would be cargo-culting. |
 | **Kubernetes** | Single-node Docker Compose is honest for the actual scale. K8s YAML doesn't prove anything the project actually needs. |
 | **Isolation Forest (third model)** | Supervised (XGBoost) + unsupervised (autoencoder) already cover two paradigms. A third model is diminishing returns. |

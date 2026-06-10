@@ -453,7 +453,7 @@ models.
 
 ## Limitations
 
-- **Single instance, single process.** `docker-compose.yml:171-188`
+- **Single instance, single process.** `docker-compose.yml:115-132`
   runs exactly one `serving` container. No horizontal scaling, no
   rolling deploys. The `SERVING_WORKERS=1` env variable (in
   `.env.example:35`) is the knob to turn it up; the container would

@@ -47,12 +47,12 @@ still drowning your fraud team in false alarms.
 **In this codebase.** The project uses **three** countermeasures stacked,
 because each alone is insufficient:
 
-1. **SMOTE** oversampling in training (`train_xgboost.py:118-119`),
+1. **SMOTE** oversampling in training (`train_xgboost.py:123-124`),
    see [§3](#3-smote).
-2. **`scale_pos_weight`** passed to XGBoost (`train_xgboost.py:86, 92`),
+2. **`scale_pos_weight`** passed to XGBoost (`train_xgboost.py:91, 97`),
    multiplies the loss contribution of positive examples by
    `n_neg / n_pos` (about 580 for this dataset). "Belt and suspenders"
-   alongside SMOTE per the code comment on line 86.
+   alongside SMOTE per the code comment on line 91.
 3. **Threshold tuning** on the PR curve with an asymmetric cost
    (`evaluate.py:47-72`), see [§5](#5-decision-threshold-tuning).
 
@@ -76,7 +76,7 @@ neighbours. Pick one, `x_j`. Generate a synthetic point along the line:
 Repeat until classes are balanced.
 
 **In this codebase.** `imblearn.over_sampling.SMOTE` is applied *after*
-scaling and *only* to the training split (`train_xgboost.py:117-123`).
+scaling and *only* to the training split (`train_xgboost.py:122-128`).
 It is never applied to the validation set, doing so would leak
 synthetic data into evaluation and give you a falsely optimistic score.
 
@@ -120,8 +120,9 @@ don't depend on picking one.
 **In this codebase.** `training/evaluate.py:25-44` logs **both** metrics
 for every run. The `plan.md` acceptance target (AUC-ROC > 0.95) is the
 headline number; PR-AUC is the one the project uses to compare models
-honestly (`retrain_dag.py:112` compares candidates on PR-AUC, not
-AUC-ROC).
+honestly (the promotion gate in `model_registry.py:42-90` — called from
+both `make promote` and the retrain DAG — compares candidates on
+PR-AUC, not AUC-ROC).
 
 **Limits.**
 
@@ -164,7 +165,7 @@ for t in thresholds:           # thresholds come from precision_recall_curve
 
 The default ratio `cost_fn=10, cost_fp=1` (line 51) encodes "missing a
 fraud is 10x worse than a false alarm". The chosen threshold is logged
-as an MLflow metric (`train_xgboost.py:130, 143`) and later fetched by
+as an MLflow metric (`train_xgboost.py:135, 148`) and later fetched by
 the serving layer (`serving/app/models/loader.py:103`) so training and
 serving use the **same** cutoff.
 
@@ -194,7 +195,7 @@ binary classification with log-loss, those residuals are `y - p`.
 
 **In this codebase.**
 
-- `training/train_xgboost.py:88-97` configures XGBoost:
+- `training/train_xgboost.py:93-102` configures XGBoost:
   300 trees, max depth 6, learning rate 0.05,
   `eval_metric="aucpr"` (optimises PR-AUC directly),
   `scale_pos_weight` for imbalance.
@@ -472,7 +473,7 @@ Not strictly ML theory but essential vocabulary:
 
 - An **experiment** is a named group of runs (e.g.
   `fraud-detection-xgboost`, created in
-  `train_xgboost.py:104`). You can think of it as a folder.
+  `train_xgboost.py:109`). You can think of it as a folder.
 - A **run** is one execution of a training script. It captures
   parameters, metrics, tags, and artifacts. Each `with
   mlflow.start_run()` block is one run.
@@ -497,13 +498,13 @@ one-liners for everything on this page.
 
 | Term | First appears in |
 |---|---|
-| Class imbalance | `train_xgboost.py:84-86` |
-| SMOTE | `train_xgboost.py:118-119` |
+| Class imbalance | `train_xgboost.py:89-91` |
+| SMOTE | `train_xgboost.py:123-124` |
 | PR-AUC | `evaluate.py:39` |
 | Threshold tuning | `evaluate.py:47-72` |
-| XGBoost | `train_xgboost.py:88-97` |
+| XGBoost | `train_xgboost.py:93-102` |
 | Autoencoder | `train_autoencoder.py:78-98` |
 | SHAP | `serving/app/models/explainer.py:22` |
 | A/B hash routing | `serving/app/models/ab_testing.py:24-26` |
-| MLflow registry alias | `model_registry.py` + `train_xgboost.py:187` |
+| MLflow registry alias | `model_registry.py:42-90` (gated champion promotion) |
 | Data drift (Evidently) | `scripts/drift_report.py` |

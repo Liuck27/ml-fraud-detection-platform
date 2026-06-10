@@ -33,11 +33,11 @@ complementary.
 
 ## XGBoost, `training/train_xgboost.py`
 
-Entry point: `training/train_xgboost.py:102` (`main`).
+Entry point: `training/train_xgboost.py:107` (`main`).
 
 ### The feature contract
 
-`FEATURE_COLS` at lines 54-60 is the authoritative list of 33 features:
+`FEATURE_COLS` at lines 59-65 is the authoritative list of 33 features:
 
 ```python
 FEATURE_COLS = [f"V{i}" for i in range(1, 29)] + [
@@ -53,7 +53,7 @@ This list must match the serving loader's `FEATURE_COLS` exactly
 (`serving/app/models/loader.py:32-38`), if they drift apart,
 training-serving skew breaks predictions silently.
 
-### Data split, `train_xgboost.py:108-110`
+### Data split, `train_xgboost.py:113-115`
 
 ```python
 X_train_df, X_val_df, y_train, y_val = train_test_split(
@@ -69,16 +69,16 @@ X_train_df, X_val_df, y_train, y_val = train_test_split(
   validate on day N+1). Flagged as a known honest limitation in
   [10, Limitations](10-limitations-and-extensions.md).
 
-### Scaling, `train_xgboost.py:113-115`
+### Scaling, `train_xgboost.py:118-120`
 
 `StandardScaler` fit on the training split only, then used to transform
 both splits. The fitted scaler is pickled and logged as an MLflow
-artifact (lines 156-160) so the serving container can apply **the exact
+artifact (lines 161-165) so the serving container can apply **the exact
 same scaling** at inference time, not fit a new scaler on serving data.
 This is the standard way to avoid training-serving skew on feature
 scaling.
 
-### SMOTE, `train_xgboost.py:118-123`
+### SMOTE, `train_xgboost.py:123-128`
 
 ```python
 smote = SMOTE(random_state=42)
@@ -92,7 +92,7 @@ After SMOTE, the training set typically goes from ~227k legit vs ~394
 fraud to ~227k vs ~227k. The validation set is **never** SMOTE'd,
 that would make metrics meaningless.
 
-### Model config, `train_xgboost.py:88-97`
+### Model config, `train_xgboost.py:93-102`
 
 ```python
 XGBClassifier(
@@ -108,7 +108,7 @@ XGBClassifier(
 - **300 trees, depth 6, lr 0.05.** Standard tabular baseline, not
   aggressively tuned. `n_estimators × learning_rate ~ 15` is the rough
   "how much total signal are we learning" knob.
-- **`scale_pos_weight`** is "belt and suspenders" with SMOTE (line 86
+- **`scale_pos_weight`** is "belt and suspenders" with SMOTE (line 91
   comment). Both are working on the same problem (class imbalance); in
   theory using both is redundant. In practice it's cheap extra
   regularisation toward the minority class. See [02 § Class imbalance](02-ml-concepts.md#class-imbalance).
@@ -119,7 +119,7 @@ XGBClassifier(
 early stopping. All of those would be the next productivity
 investments if you were tuning seriously.
 
-### Threshold calibration, `evaluate.py:47-72` via `train_xgboost.py:129`
+### Threshold calibration, `evaluate.py:47-72` via `train_xgboost.py:134`
 
 ```python
 threshold = find_optimal_threshold(y_val.values, y_pred_proba)
@@ -142,40 +142,50 @@ serving loader can read it back from MLflow instead of hardcoding 0.5.
 
 ### What gets logged to MLflow
 
-Inside the `with mlflow.start_run()` block (`train_xgboost.py:125-168`):
+Inside the `with mlflow.start_run()` block (`train_xgboost.py:130-173`):
 
-- **Parameters** (`log_params` at 133-142): `n_estimators`, `max_depth`,
+- **Parameters** (`log_params` at 138-147): `n_estimators`, `max_depth`,
   `learning_rate`, `smote`, `test_size`, `n_features`.
-- **Metrics** (`log_metrics` at 143): `auc_roc`, `pr_auc`, `f1`,
+- **Metrics** (`log_metrics` at 148): `auc_roc`, `pr_auc`, `f1`,
   `precision`, `recall`, `threshold`, all from `compute_metrics`.
-- **Figures** (146-149): ROC curve PNG, PR curve PNG.
-- **Scaler** (156-160): `scaler.pkl` logged under `artifact_path="scaler"`.
-- **Model** (163-168): `mlflow.xgboost.log_model` registers under
+- **Figures** (151-154): ROC curve PNG, PR curve PNG.
+- **Scaler** (161-165): `scaler.pkl` logged under `artifact_path="scaler"`.
+- **Model** (168-173): `mlflow.xgboost.log_model` registers under
   `registered_model_name="fraud-xgboost"` with an `input_example` so
   MLflow captures the signature.
 
-### Registry promotion, `train_xgboost.py:182-187`
+### Registration vs. promotion, `train_xgboost.py:186-194`
 
-After the run closes, the newly registered version is promoted to
-`champion`:
+After the run closes, the script prints the newly registered version,
+and that is *all* it does — training never moves the `champion` alias:
 
 ```python
-latest = max(versions, key=lambda v: int(v.version))
-promote_to_champion(MODEL_NAME, latest.version)
+version = get_latest_version(MODEL_NAME)
+print(f"Registered {MODEL_NAME} v{version}. ...")
 ```
 
-`promote_to_champion` (at `training/model_registry.py:12-16`) is a
-thin wrapper that calls
-`client.set_registered_model_alias(model_name, "champion", version)`.
+Promotion is a separate, gated release decision implemented in
+`promote_champion_if_better` (`training/model_registry.py:42-90`): the
+candidate's PR-AUC must be at least as good as the current champion's,
+with a fallback to unconditional promotion when no champion exists yet
+(the very first run). There are two ways to apply it:
 
-**Important:** the one-shot training script promotes *unconditionally*.
-The retrain DAG (`airflow/dags/retrain_dag.py:130-140`) does the same
-thing *conditionally*, only if the new version's PR-AUC beats the
-existing champion's. See [04 § The retrain DAG](04-data-and-features.md#the-retrain-dag).
+- **Host-side**: `make promote` (runs `scripts/promote_model.py`);
+  `scripts/run_training.sh` calls it automatically after both models
+  finish, so a fresh setup still ends with a servable champion.
+- **In Airflow**: the retrain DAG's `evaluate_and_promote` task imports
+  and calls this exact function (the `training/` directory is
+  volume-mounted into the Airflow containers). See
+  [04 § The retrain DAG](04-data-and-features.md#the-retrain-dag).
+
+**Why the split matters:** training runs are experiments. If the script
+promoted its own output, a bad run (worse data, a buggy change) would
+silently replace the serving model. Separating "register" from
+"promote" means nothing reaches production without passing the gate.
 
 ### Target metric
 
-The "done" bar is **AUC-ROC > 0.95** (line 178-179 prints a warning
+The "done" bar is **AUC-ROC > 0.95** (line 183-184 prints a warning
 otherwise). In practice the model clears ~0.97 comfortably on this
 dataset. PR-AUC is the more honest metric, typically around 0.85 on
 the validation split.
@@ -271,11 +281,14 @@ called on artifact paths so MLflow records forward slashes in the
 backslashes and the model fails to load inside the Linux serving
 container.
 
-### Registry promotion, `train_autoencoder.py:303-309`
+### Registry promotion, `train_autoencoder.py:303-307`
 
-Same pattern as XGBoost but promotes to **`challenger`** instead of
-`champion`. The API's A/B router (see [06 § A/B routing](06-serving-api.md))
-sends `AB_CHALLENGER_FRACTION` (0.20 by default) of requests to the
+Unlike XGBoost, the autoencoder promotes itself to **`challenger`**
+unconditionally — and that asymmetry is deliberate. `challenger` means
+"the latest candidate under evaluation", so it should always point at
+the newest version; only `champion` is protected by the quality gate.
+The API's A/B router (see [06 § A/B routing](06-serving-api.md)) sends
+`AB_CHALLENGER_FRACTION` (0.20 by default) of requests to the
 challenger.
 
 ## MLflow, concretely
@@ -293,13 +306,13 @@ training script:
   `http://localhost:5000`.
 
 If the env var isn't set, both scripts default to `http://localhost:5000`
-(lines `train_xgboost.py:64` and `train_autoencoder.py:63`).
+(lines `train_xgboost.py:69` and `train_autoencoder.py:63`).
 
 ### Experiments
 
 Two experiments, each a namespace for runs:
 
-- `fraud-detection-xgboost` (`train_xgboost.py:104`)
+- `fraud-detection-xgboost` (`train_xgboost.py:109`)
 - `fraud-detection-autoencoder` (`train_autoencoder.py:200`)
 
 Each `make train-xgboost` or `make train-autoencoder` invocation
@@ -339,10 +352,14 @@ Tiny wrapper around `MlflowClient`:
 - `promote_to_challenger(model_name, version)`, `:19-23`
 - `get_latest_version(model_name)`, `:26-32`
 - `get_champion_run_id(model_name)`, `:35-39`
+- `promote_champion_if_better(model_name, version, metric)`, `:42-90` —
+  the champion quality gate, used by `make promote` /
+  `scripts/promote_model.py`
 
-The training scripts import from here; the retrain DAG uses the
-`MlflowClient` directly. Both patterns coexist; the helpers just keep
-the training-script code readable.
+The training scripts import from here; the retrain DAG inlines the same
+gate logic with `MlflowClient` directly, because the training package
+isn't importable inside the Airflow container. Both patterns coexist;
+the helpers just keep the training-script code readable.
 
 ## Shared evaluation, `training/evaluate.py`
 

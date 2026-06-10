@@ -155,8 +155,7 @@ project logic.
 
 ## Integration tests, `tests/integration/`
 
-Three tests in `test_pipeline_e2e.py`, plus a Kafka placeholder
-(`test_kafka_flow.py` is a one-line stub for a future Phase 11).
+Three tests in `test_pipeline_e2e.py`.
 
 ### The reachability pattern, `conftest.py:22-28`
 
@@ -317,9 +316,6 @@ whole stack, not a per-commit check.
 - **No performance regression tests.** A 100ms regression on p99
   latency wouldn't fail CI. Adding a simple `pytest-benchmark` check
   on the `prepare_features` function would be quick wins.
-- **Kafka integration test is a stub.** `tests/integration/test_kafka_flow.py`
-  is one comment line, the pattern is there for a future Phase 11,
-  which is deliberately out of scope.
 
 ## Where to go next
 

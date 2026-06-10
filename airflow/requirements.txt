@@ -1,7 +1,10 @@
 # Airflow — most constrained environment, kept isolated from other services.
-# Requires SQLAlchemy<2, which conflicts with PyTorch/scikit-learn — this is why
-# Airflow gets its own venv.
-# Note: installation is slow (~5–10 min) due to Airflow's large dependency graph.
+# Airflow pins a huge transitive tree (SQLAlchemy<2, Flask, etc.), so sharing
+# an env with the other services' fast-moving deps invites resolver conflicts —
+# this is why Airflow gets its own venv. This file covers the host venv (DAG
+# development); the container image additionally installs the training deps
+# needed by the retrain DAG (see airflow/Dockerfile).
+# Note: installation is slow (~5-10 min) due to Airflow's large dependency graph.
 
 apache-airflow==2.7.3
 apache-airflow-providers-postgres==5.7.1

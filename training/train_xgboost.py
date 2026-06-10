@@ -2,7 +2,12 @@
 
 Reads features.parquet produced by the Airflow data ingestion DAG,
 trains an XGBoost classifier with SMOTE oversampling, logs everything
-to MLflow, and registers the model as 'champion' in the Model Registry.
+to MLflow, and registers a new model version in the Model Registry.
+
+Training does NOT touch the 'champion' alias: promotion is a separate,
+gated step (only if PR-AUC improves on the current champion) — run
+`make promote` / scripts/promote_model.py, or the retrain DAG's
+evaluate_and_promote task. scripts/run_training.sh does this for you.
 
 Run from the repo root:
     training/.venv/Scripts/python training/train_xgboost.py   # Windows
@@ -39,7 +44,7 @@ from evaluate import (
     plot_pr_curve,
     plot_roc_curve,
 )
-from model_registry import promote_to_champion
+from model_registry import get_latest_version
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -178,13 +183,15 @@ def main() -> None:
         if metrics["auc_roc"] < 0.95:
             print(f"WARNING: AUC-ROC {metrics['auc_roc']:.4f} is below target 0.95")
 
-    # Promote the newly registered version to champion
-    from mlflow.tracking import MlflowClient
-
-    client = MlflowClient()
-    versions = client.search_model_versions(f"name='{MODEL_NAME}'")
-    latest = max(versions, key=lambda v: int(v.version))
-    promote_to_champion(MODEL_NAME, latest.version)
+    # Registration only — the 'champion' alias is NOT moved here. Promotion is
+    # a gated release decision (new PR-AUC must beat the current champion's),
+    # applied by `make promote` or the retrain DAG. This separation means a bad
+    # training run can never silently replace the serving model.
+    version = get_latest_version(MODEL_NAME)
+    print(
+        f"Registered {MODEL_NAME} v{version}. "
+        "Run `make promote` (or the retrain DAG) to apply the gated champion promotion."
+    )
 
 
 if __name__ == "__main__":
