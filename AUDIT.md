@@ -27,7 +27,16 @@ which surfaced one additional issue (MLflow artifact misconfiguration, documente
 | L6 drift generator's `is_night` definition | **FIXED** (matches canonical 22:00-06:00 definition) |
 | Bonus: MLflow artifacts written client-side | **FIXED** (proxied `mlflow-artifacts:/` scheme; see H1 resolution) |
 | Bonus: pyfunc artifact paths break cross-OS | **FIXED** (see M1 resolution: `load_context` normalises separators) |
-| L2, L3, L5, L7-L11 | open |
+| L2 unreachable column check | **FIXED** (schema validated via `pyarrow.parquet.read_schema` first) |
+| L3 unpinned shap | **FIXED** (`shap==0.49.1` — the version already deployed) |
+| L5 inconsistent error-counter labels | **FIXED** (full `model_name` scheme on all four metrics) |
+| L7 EDA notebook committed unexecuted | **FIXED** (executed in place; charts render on GitHub) |
+| L8 sklearn feature-names warning | **FIXED** (scalers receive DataFrames; autoencoder retrained as v5) |
+| L9 plan.md fallback claim | **FIXED** (now describes degraded mode + 503) |
+| L10 O(n*k) threshold sweep | **FIXED** (vectorised cumulative-sum sweep, equivalence-tested) |
+| L11 no serving healthcheck | **FIXED** (mlflow + serving healthchecks; `service_healthy` dependency) |
+
+All findings resolved as of 2026-06-11.
 
 **Overall verdict:** the architecture is genuinely sound and matches industry practice.
 The scope decisions (no Kafka, no Kubernetes, Evidently as a script) are well-reasoned and
@@ -336,36 +345,61 @@ The plan's own acceptance criterion is "README quickstart works for a fresh clon
 - **L1.** ~~`train_autoencoder.py` docstring says `Input(33)`, while `plan.md` and
   `CLAUDE.md` say `Input(30) → 64 → …`.~~ FIXED with M1: the correct value is now 32
   (28 V + 4 engineered); docstring, plan.md, and wiki all agree.
-- **L2.** `retrain_dag.validate_features` reads the parquet with `columns=list(EXPECTED…)`
+- **L2.** ~~`retrain_dag.validate_features` reads the parquet with `columns=list(EXPECTED…)`
   and then checks for missing columns — `read_parquet` would already have raised, so the
-  check is unreachable. Read without `columns=` or drop the check.
-- **L3.** `serving/requirements.txt` pins everything except `shap>=0.44`, directly under a
-  comment explaining why exact pins matter. Pin shap.
+  check is unreachable. Read without `columns=` or drop the check.~~ FIXED 2026-06-11: the
+  check now reads the parquet *schema* via `pyarrow.parquet.read_schema` (no data load),
+  then loads only the `Class` column for the fraud-rate stat — the validation is reachable
+  and produces its own readable error.
+- **L3.** ~~`serving/requirements.txt` pins everything except `shap>=0.44`, directly under a
+  comment explaining why exact pins matter. Pin shap.~~ FIXED 2026-06-11: pinned to
+  `shap==0.49.1`, the version the resolver had already installed in both the serving venv
+  and the running container — so the pin freezes current behaviour rather than changing it.
 - **L4.** ~~`use_label_encoder=False` in `XGBClassifier` is a removed/no-op parameter in
   XGBoost 2.x and produces a "Parameters: { use_label_encoder } are not used" warning.~~
   FIXED with M2 (deleted).
-- **L5.** `predict.py` error counter uses label values `"champion"`/`"challenger"` for
+- **L5.** ~~`predict.py` error counter uses label values `"champion"`/`"challenger"` for
   `model_name`, while latency/total counters use full names like
   `fraud-xgboost-champion`. Inconsistent label scheme makes PromQL joins across the
-  metrics awkward. Unify.
+  metrics awkward. Unify.~~ FIXED 2026-06-11: both handlers resolve the full model name
+  before predicting, so the error counter shares the exact label values of the
+  latency/total metrics (`"unknown"` remains only for the no-models-loaded 503, where
+  there is no model to name). The alert rule uses no `model_name` filter, so it is
+  unaffected.
 - **L6.** ~~`generate_drift_data.py` recomputes `is_night` as `hour_of_day < 6`, dropping
   the 22:00–23:00 hours from the training definition.~~ FIXED with M1 (same file edit):
   now `(hour >= 22) | (hour < 6)`, matching the canonical definition.
-- **L7.** The EDA notebook is committed with no executed outputs (all
+- **L7.** ~~The EDA notebook is committed with no executed outputs (all
   `execution_count: null`), so on GitHub it renders without a single chart. For a
-  portfolio, commit it executed — the rendered plots are the point.
-- **L8.** The StandardScaler is fit on a DataFrame but applied to `df.values` at serving,
-  which triggers sklearn's "X does not have valid feature names" warning on every request.
-  Also note: scaling does nothing for XGBoost (trees are scale-invariant) — it's only
-  needed for the autoencoder. Worth being able to explain; optionally drop scaling from
-  the XGBoost pipeline.
-- **L9.** `plan.md` promises "fallback to local artifact cache if MLflow is unreachable";
-  the implementation does degraded mode + 503 instead (which is fine — update the plan).
-- **L10.** `find_optimal_threshold` re-thresholds the entire score array for every
+  portfolio, commit it executed — the rendered plots are the point.~~ FIXED 2026-06-11:
+  executed in place with `jupyter nbconvert --execute` against the real dataset; all
+  cells have outputs and the charts render on GitHub.
+- **L8.** ~~The StandardScaler is fit on a DataFrame but applied to `df.values` at serving,
+  which triggers sklearn's "X does not have valid feature names" warning on every request.~~
+  FIXED 2026-06-11: the XGBoost path (loader + SHAP prep) now passes the DataFrame
+  itself. The autoencoder's `transform(.values)` lives *inside* the pickled pyfunc, so
+  fixing the source required retraining — v5 trained and promoted to challenger
+  (PR-AUC 0.2519, within the model's usual 0.23-0.28 band). Remaining note kept on
+  purpose: scaling is a no-op for XGBoost (trees are scale-invariant) and is retained
+  only for pipeline symmetry with the autoencoder — a deliberate, explainable choice
+  rather than a bug.
+- **L9.** ~~`plan.md` promises "fallback to local artifact cache if MLflow is unreachable";
+  the implementation does degraded mode + 503 instead (which is fine — update the plan).~~
+  FIXED 2026-06-11: plan.md now describes the degraded-mode behaviour that is actually
+  implemented.
+- **L10.** ~~`find_optimal_threshold` re-thresholds the entire score array for every
   candidate threshold — O(n²)-ish on a 57k-row validation set. Works, but a vectorized
-  cumulative-sum sweep is the textbook version; cheap interview win.
-- **L11.** The serving container has no compose healthcheck and only `service_started`
-  dependency on MLflow; a healthcheck on `/health` would make `make up` self-verifying.
+  cumulative-sum sweep is the textbook version; cheap interview win.~~ FIXED 2026-06-11:
+  rewritten as a sort-once + cumulative-sum sweep. Verified equivalent to the loop on
+  ~900 randomised cases (including heavy score ties): identical threshold every time,
+  same lowest-threshold tie-breaking.
+- **L11.** ~~The serving container has no compose healthcheck and only `service_started`
+  dependency on MLflow; a healthcheck on `/health` would make `make up` self-verifying.~~
+  FIXED 2026-06-11: MLflow got a healthcheck (python `urllib` probe — the image has no
+  curl) and serving depends on it with `service_healthy`, removing the startup race
+  against model loading. Serving's own healthcheck parses `/health` JSON and reports
+  healthy only when both models are loaded — `docker compose ps` now answers "can it
+  actually score", and a model-less fresh stack correctly shows unhealthy.
 
 ---
 
@@ -396,4 +430,5 @@ The plan's own acceptance criterion is "README quickstart works for a fresh clon
 4. ~~H1 (retrain DAG runtime) — decide the strategy first (DockerOperator vs mounting)~~ DONE (mount + deps)
 5. ~~M1 + M2 + M4 + M5 (feature/imbalance correctness) — then retrain and update metrics~~ DONE
 6. ~~M3 (proper test split) — retrain once more, report honest metrics~~ DONE (bundled with step 5: one retrain covered both)
-7. ~~M6, M7~~ DONE, then the LOW list as time allows (L1, L4, L6 already fixed alongside step 5)
+7. ~~M6, M7, then the LOW list as time allows~~ ALL DONE — every finding in this audit is
+   resolved as of 2026-06-11.

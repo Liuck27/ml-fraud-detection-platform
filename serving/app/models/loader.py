@@ -172,7 +172,9 @@ class ModelRegistry:
     def predict_xgb(self, df: pd.DataFrame) -> tuple[float, bool]:
         """Scale features and return (fraud_probability, is_fraud)."""
         assert self._xgb_model is not None and self._xgb_scaler is not None
-        X_scaled = self._xgb_scaler.transform(df.values)
+        # Pass the DataFrame, not .values: the scaler was fit on a DataFrame
+        # and warns about missing feature names when given a bare array.
+        X_scaled = self._xgb_scaler.transform(df)
         proba = float(self._xgb_model.predict_proba(X_scaled)[0, 1])
         return proba, proba >= self._xgb_threshold
 

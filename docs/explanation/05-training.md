@@ -127,18 +127,26 @@ XGBClassifier(
 early stopping. All of those would be the next productivity
 investments if you were tuning seriously.
 
-### Threshold calibration, `evaluate.py:47-72` via `train_xgboost.py:145`
+### Threshold calibration, `evaluate.py:47-84` via `train_xgboost.py:145`
 
 ```python
 threshold = find_optimal_threshold(y_val.values, y_val_proba)
 ```
 
-`find_optimal_threshold` sweeps the PR-curve's threshold array and
-picks the one minimising total cost:
+`find_optimal_threshold` evaluates every candidate threshold on the
+PR curve and picks the one minimising total cost:
 
 ```python
 cost = cost_fp * fp + cost_fn * fn    # default cost_fn=10, cost_fp=1
 ```
+
+The sweep is vectorised: scores are sorted descending once, and
+cumulative sums give the TP/FP counts at every candidate threshold in
+one pass. An earlier version re-thresholded the entire score array per
+candidate — O(n x k) over a ~57k-row validation split with tens of
+thousands of distinct scores. Both versions pick the identical
+threshold (ties resolve to the lowest candidate); the cumulative-sum
+form is just the textbook way to do it.
 
 The default 10:1 cost ratio encodes the project's assumption that one
 missed fraud is worth 10 customer-friction events. That single choice
@@ -203,7 +211,7 @@ on the held-out test split.
 
 ## Autoencoder, `training/train_autoencoder.py`
 
-Entry point: `training/train_autoencoder.py:207` (`main`).
+Entry point: `training/train_autoencoder.py:209` (`main`).
 
 Same input features (lines 53-58). Different training philosophy.
 
@@ -219,7 +227,7 @@ Input(32) → 64 → 32 → 16 → 32 → 64 → Output(32)
   structure of *normal* transactions, no capacity for memorising
   outliers.
 
-### Trains only on legitimate data, `train_autoencoder.py:226-231`
+### Trains only on legitimate data, `train_autoencoder.py:228-233`
 
 ```python
 mask_legit = y_train == 0
@@ -234,14 +242,14 @@ used later — on the validation split for threshold calibration and on
 the test split for metric computation. This is what "unsupervised"
 means in practice here.
 
-### Training loop, `train_autoencoder.py:168-191`
+### Training loop, `train_autoencoder.py:170-193`
 
 - 50 epochs, batch size 256, AdamW optimizer, lr 1e-3.
 - MSE loss between input and reconstruction.
 - Standard PyTorch loop, no fancy scheduler, early stopping, or
   gradient clipping.
 
-### From error to probability, `train_autoencoder.py:243-258`
+### From error to probability, `train_autoencoder.py:245-260`
 
 Reconstruction error is just a non-negative real number. To plug the
 autoencoder into the same A/B-testing surface as XGBoost, the code
@@ -259,12 +267,12 @@ val_scores = np.clip(val_errors / (p99_legit * 2 + 1e-8), 0.0, 1.0)
 - Anything above roughly `2 × p99_legit` is a saturation at 1.0.
 
 The threshold search runs on the normalised validation scores
-(`find_optimal_threshold` at line 252); reported metrics come from the
+(`find_optimal_threshold` at line 254); reported metrics come from the
 test split, scored with the same frozen denominator and threshold. The
 raw-error threshold is stored alongside, because the serving pyfunc
 wrapper uses raw errors.
 
-### The `AutoencoderPyfunc` wrapper, `train_autoencoder.py:108-147`
+### The `AutoencoderPyfunc` wrapper, `train_autoencoder.py:108-149`
 
 MLflow can't natively serve a PyTorch model the same way it serves
 XGBoost. You wrap it in an `mlflow.pyfunc.PythonModel` so serving code
@@ -280,7 +288,7 @@ At load time (`load_context` at 115-130) all three are restored. At
 predict time (132-147):
 
 ```python
-X_scaled = self.scaler.transform(model_input.values)
+X_scaled = self.scaler.transform(model_input)
 recon = self.model(X_tensor).numpy()
 errors = np.mean((X_scaled - recon) ** 2, axis=1)
 proba = np.clip(errors / (self.threshold * 2), 0.0, 1.0)
@@ -291,7 +299,7 @@ and returns a DataFrame with `fraud_probability` and
 
 **Windows-specific gotchas** (two, both about path separators):
 
-- `Path.as_posix()` (line 287-289 comment) is called on the artifact
+- `Path.as_posix()` (line 289-291 comment) is called on the artifact
   *source* paths so MLflow records forward slashes in the `MLmodel`
   file's `uri` fields.
 - `load_context` (lines 116-121 comment) normalises the artifact paths
@@ -302,7 +310,7 @@ and returns a DataFrame with `fraud_probability` and
   `artifacts/model.pt`; only the separator in the recorded string is
   wrong, so `replace("\\", "/")` makes the model loadable on either OS.
 
-### Registry promotion, `train_autoencoder.py:326-330`
+### Registry promotion, `train_autoencoder.py:328-332`
 
 Unlike XGBoost, the autoencoder promotes itself to **`challenger`**
 unconditionally — and that asymmetry is deliberate. `challenger` means
@@ -334,7 +342,7 @@ If the env var isn't set, both scripts default to `http://localhost:5000`
 Two experiments, each a namespace for runs:
 
 - `fraud-detection-xgboost` (`train_xgboost.py:108`)
-- `fraud-detection-autoencoder` (`train_autoencoder.py:202`)
+- `fraud-detection-autoencoder` (`train_autoencoder.py:204`)
 
 Each `make train-xgboost` or `make train-autoencoder` invocation
 creates one new run under the corresponding experiment.
@@ -390,7 +398,7 @@ autoencoder metric definitions.
 | Function | Line | What |
 |---|---|---|
 | `compute_metrics` | 25-44 | `auc_roc`, `pr_auc`, `f1`, `precision`, `recall`, `threshold` |
-| `find_optimal_threshold` | 47-72 | Cost-weighted threshold sweep (default 10:1) |
+| `find_optimal_threshold` | 47-84 | Cost-weighted threshold sweep (default 10:1) |
 | `plot_roc_curve` | 75-92 | Matplotlib ROC figure for MLflow |
 | `plot_pr_curve` | 95-111 | Matplotlib PR figure for MLflow |
 
@@ -411,7 +419,7 @@ Each command runs inside the `training/.venv` so `torch`, `xgboost`, and
 
 Prerequisite: `data/processed/features.parquet` must exist. If it
 doesn't, both scripts raise `FileNotFoundError` with a hint to run the
-ingestion DAG (`train_xgboost.py:78-82`, `train_autoencoder.py:155-159`).
+ingestion DAG (`train_xgboost.py:78-82`, `train_autoencoder.py:157-161`).
 
 ## Limitations
 

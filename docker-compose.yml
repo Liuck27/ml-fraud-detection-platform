@@ -78,6 +78,13 @@ services:
       --default-artifact-root mlflow-artifacts:/
       --host 0.0.0.0
       --port 5000
+    healthcheck:
+      # The image has no curl; python ships with it. MLflow serves GET /health.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
       - fraud-net
 
@@ -127,7 +134,16 @@ services:
       postgres:
         condition: service_healthy
       mlflow:
-        condition: service_started
+        condition: service_healthy  # models are loaded at startup, so MLflow must be ready
+    healthcheck:
+      # GET /health always returns 200; the JSON status field says whether the
+      # models actually loaded. A fresh stack with no trained models shows
+      # "unhealthy" here — that is accurate, not a bug (train, then restart).
+      test: ["CMD", "python", "-c", "import json,sys,urllib.request; r=json.load(urllib.request.urlopen('http://localhost:8000/health', timeout=3)); sys.exit(0 if r['status'] == 'healthy' else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     networks:
       - fraud-net
 

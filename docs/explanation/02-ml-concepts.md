@@ -25,7 +25,7 @@ compressed representation. Things it reproduces poorly are "weird".
 **In this codebase.** XGBoost (`training/train_xgboost.py`) is
 supervised: it uses the `Class` column (0/1). The autoencoder
 (`training/train_autoencoder.py`) is unsupervised: it only sees
-non-fraud rows (line 226 masks `y_train == 0`) and is judged by how
+non-fraud rows (line 228 masks `y_train == 0`) and is judged by how
 badly it reconstructs fraud.
 
 **Limits.** Supervised needs labels, which are expensive when fraud is
@@ -54,7 +54,7 @@ still drowning your fraud team in false alarms.
    would double-correct the imbalance. One strategy, applied once, that
    the code can actually defend.
 2. **Threshold tuning** on the PR curve with an asymmetric cost
-   (`evaluate.py:47-72`), see [§5](#5-decision-threshold-tuning).
+   (`evaluate.py:47-84`), see [§5](#5-decision-threshold-tuning).
 
 **Limits.** Over-sampling can cause the model to over-fit to synthetic
 minority examples; that is why metrics are reported on a held-out test
@@ -149,7 +149,7 @@ cost(t) = cost_fp * FP(t) + cost_fn * FN(t)
 Optimum is the `t` that minimises this expression. If `cost_fn = 10 *
 cost_fp`, the optimum is lower than 0.5 because FN is more expensive.
 
-**In this codebase.** `training/evaluate.py:47-72` implements exactly
+**In this codebase.** `training/evaluate.py:47-84` implements exactly
 this:
 
 ```python
@@ -247,14 +247,14 @@ The decoder mirrors the encoder, a common convention, not a hard rule.
 `e(x) = mean((x - f(x))^2)` and compare to a threshold.
 
 **Turning error into probability.** A raw reconstruction error isn't
-bounded. The pyfunc wrapper (`train_autoencoder.py:132-147`) normalises
+bounded. The pyfunc wrapper (`train_autoencoder.py:132-149`) normalises
 by dividing by `2 * threshold` and clipping to `[0, 1]`. That's a
 pragmatic choice, it keeps the response shape identical to XGBoost's
 so both models look the same to the serving layer.
 
 **In this codebase.**
 
-- Trained on legit rows only (`train_autoencoder.py:226-231`).
+- Trained on legit rows only (`train_autoencoder.py:228-233`).
 - Saved via TorchScript (`torch.jit.script`) so it can load inside
   MLflow without the original PyTorch class definition (lines 296-297).
 - Wrapped as an `mlflow.pyfunc.PythonModel` that handles scaling +
@@ -264,7 +264,7 @@ so both models look the same to the serving layer.
 
 - No SHAP explanations (TreeExplainer doesn't apply to neural nets;
   KernelExplainer is too slow for serving, see [§9](#9-shap-values)).
-- The 99th-percentile-of-legit trick (`train_autoencoder.py:244-249`)
+- The 99th-percentile-of-legit trick (`train_autoencoder.py:246-251`)
   is pragmatic but not principled.
 - Autoencoders can silently "memorise" training data if the bottleneck
   is too large; 33 -> 16 is aggressive enough here.
@@ -503,7 +503,7 @@ one-liners for everything on this page.
 | Class imbalance | `train_xgboost.py:89-91` |
 | SMOTE | `train_xgboost.py:123-124` |
 | PR-AUC | `evaluate.py:39` |
-| Threshold tuning | `evaluate.py:47-72` |
+| Threshold tuning | `evaluate.py:47-84` |
 | XGBoost | `train_xgboost.py:93-102` |
 | Autoencoder | `train_autoencoder.py:80-100` |
 | SHAP | `serving/app/models/explainer.py:22` |

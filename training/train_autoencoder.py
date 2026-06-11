@@ -134,7 +134,9 @@ class AutoencoderPyfunc(mlflow.pyfunc.PythonModel):
         context: mlflow.pyfunc.PythonModelContext,
         model_input: pd.DataFrame,
     ) -> pd.DataFrame:
-        X_scaled = self.scaler.transform(model_input.values)
+        # Pass the DataFrame, not .values: the scaler was fit on a DataFrame
+        # and warns about missing feature names when given a bare array.
+        X_scaled = self.scaler.transform(model_input)
         X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         with torch.no_grad():
             X_recon = self.model(X_tensor).numpy()

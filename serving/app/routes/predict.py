@@ -36,7 +36,9 @@ def _shap_explanation(registry: ModelRegistry, df: pd.DataFrame) -> Explanation:
     explainer = get_explainer()
     if explainer is None or registry._xgb_scaler is None:
         return Explanation(top_features=[])
-    X_scaled = registry._xgb_scaler.transform(df.values)
+    # Pass the DataFrame, not .values: the scaler was fit on a DataFrame and
+    # warns about missing feature names when given a bare array.
+    X_scaled = registry._xgb_scaler.transform(df)
     contributions = explainer.explain(X_scaled)
     return Explanation(top_features=[FeatureContribution(**c) for c in contributions])
 
@@ -75,21 +77,24 @@ def predict(request: TransactionRequest) -> PredictionResponse:
     t0 = time.perf_counter()
     df = registry.prepare_features(request.features)
 
+    # Resolve the full model name before predicting so the error counter
+    # carries the same model_name label scheme as the latency/total metrics.
+    if use_challenger:
+        model_name = f"{registry._ae_name}-{registry._challenger_alias}"
+        model_version = registry._ae_version
+    else:
+        model_name = f"{registry._xgb_name}-{registry._champion_alias}"
+        model_version = registry._xgb_version
+
     try:
         if use_challenger:
             proba, is_fraud = registry.predict_ae(df)
-            model_name = f"{registry._ae_name}-{registry._challenger_alias}"
-            model_version = registry._ae_version
             explanation = Explanation(top_features=[])
         else:
             proba, is_fraud = registry.predict_xgb(df)
-            model_name = f"{registry._xgb_name}-{registry._champion_alias}"
-            model_version = registry._xgb_version
             explanation = _shap_explanation(registry, df)
     except Exception:
-        INFERENCE_ERRORS.labels(
-            model_name="challenger" if use_challenger else "champion"
-        ).inc()
+        INFERENCE_ERRORS.labels(model_name=model_name).inc()
         raise
 
     latency_ms = (time.perf_counter() - t0) * 1000
@@ -133,19 +138,20 @@ def predict_batch(request: BatchRequest) -> BatchResponse:
         t0 = time.perf_counter()
         df = registry.prepare_features(txn.features)
 
+        if use_challenger:
+            model_name = f"{registry._ae_name}-{registry._challenger_alias}"
+            model_version = registry._ae_version
+        else:
+            model_name = f"{registry._xgb_name}-{registry._champion_alias}"
+            model_version = registry._xgb_version
+
         try:
             if use_challenger:
                 proba, is_fraud = registry.predict_ae(df)
-                model_name = f"{registry._ae_name}-{registry._challenger_alias}"
-                model_version = registry._ae_version
             else:
                 proba, is_fraud = registry.predict_xgb(df)
-                model_name = f"{registry._xgb_name}-{registry._champion_alias}"
-                model_version = registry._xgb_version
         except Exception:
-            INFERENCE_ERRORS.labels(
-                model_name="challenger" if use_challenger else "champion"
-            ).inc()
+            INFERENCE_ERRORS.labels(model_name=model_name).inc()
             raise
 
         latency_ms = (time.perf_counter() - t0) * 1000

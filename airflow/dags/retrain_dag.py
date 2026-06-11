@@ -53,6 +53,7 @@ EXPECTED_FEATURE_COLS = {f"V{i}" for i in range(1, 29)} | {
 def validate_features(**_: object) -> None:
     """Check that features.parquet exists and has the expected schema."""
     import pandas as pd
+    import pyarrow.parquet as pq
 
     if not FEATURES_PATH.exists():
         raise FileNotFoundError(
@@ -60,11 +61,14 @@ def validate_features(**_: object) -> None:
             "Run the data_ingestion DAG first, or `make download-data` on the host."
         )
 
-    df = pd.read_parquet(FEATURES_PATH, columns=list(EXPECTED_FEATURE_COLS))
-    missing = EXPECTED_FEATURE_COLS - set(df.columns)
+    # Check the file's schema directly: passing columns= to read_parquet would
+    # raise its own error on a missing column before this check could run.
+    present = set(pq.read_schema(FEATURES_PATH).names)
+    missing = EXPECTED_FEATURE_COLS - present
     if missing:
         raise ValueError(f"Missing expected columns in features.parquet: {missing}")
 
+    df = pd.read_parquet(FEATURES_PATH, columns=["Class"])
     fraud_count = int(df["Class"].sum())
     print(
         f"Validation passed: {len(df):,} rows, {fraud_count} frauds "

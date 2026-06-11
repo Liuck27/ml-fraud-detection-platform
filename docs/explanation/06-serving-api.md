@@ -137,7 +137,7 @@ work-around.
 
 `ModelRegistry` is the stateful singleton that holds both models,
 scaler, threshold, and metadata. Singleton via module-level `_registry`
-at `loader.py:200` and `get_registry()` at `:203-204`.
+at `loader.py:202` and `get_registry()` at `:205-206`.
 
 ### Feature column contract, `loader.py:32-37`
 
@@ -208,19 +208,22 @@ removed from the feature set entirely. The batch endpoint simply calls
 `prepare_features` once per transaction; with only row-local features
 there is nothing a batch-level prep could do differently.
 
-### `predict_xgb`, `loader.py:172-177`
+### `predict_xgb`, `loader.py:172-179`
 
 ```python
-X_scaled = self._xgb_scaler.transform(df.values)
+X_scaled = self._xgb_scaler.transform(df)
 proba = float(self._xgb_model.predict_proba(X_scaled)[0, 1])
 return proba, proba >= self._xgb_threshold
 ```
 
 Scales the 32-feature row using the fitted training scaler, predicts
 the positive-class probability, and applies the cost-weighted
-threshold to produce `is_fraud`.
+threshold to produce `is_fraud`. The scaler receives the DataFrame
+itself, not `.values`: it was fit on a named DataFrame at training
+time, and handing it a bare array makes sklearn emit a "X does not
+have valid feature names" warning on every request.
 
-### `predict_ae`, `loader.py:179-184`
+### `predict_ae`, `loader.py:181-186`
 
 ```python
 result = self._ae_model.predict(df)
@@ -262,7 +265,7 @@ Twenty-six lines total. The pattern:
 See [02 § A/B testing](02-ml-concepts.md#a-b-testing-in-ml-serving) for
 the deeper "why" of champion/challenger.
 
-### The fallback in `_select_model`, `predict.py:44-56`
+### The fallback in `_select_model`, `predict.py:46-58`
 
 ```python
 use_challenger = route_to_challenger(transaction_id, challenger_fraction)
@@ -276,7 +279,7 @@ return use_challenger
 The A/B decision is a *suggestion*: if the target model isn't loaded,
 route to the other one. This keeps the API serving something even in
 degraded mode, as long as *one* model is up. If neither is loaded,
-the top-level 503 at `predict.py:64-66` fires.
+the top-level 503 at `predict.py:66-68` fires.
 
 ## SHAP explanations, `serving/app/models/explainer.py`
 
@@ -289,7 +292,7 @@ class SHAPExplainer:
 `TreeExplainer` is SHAP's exact-for-trees backend, see [02 § SHAP](02-ml-concepts.md#shap-values).
 It only works on tree models, which is why only the XGBoost champion
 gets real explanations. The autoencoder challenger returns
-`Explanation(top_features=[])` (`predict.py:83`).
+`Explanation(top_features=[])` (`predict.py:92`).
 
 ### Top-k sorting, `explainer.py:33-44`
 
@@ -326,7 +329,7 @@ def get_explainer() -> SHAPExplainer | None:
 Created on the first call, cached thereafter. The lifespan hook calls
 it once at startup (`main.py:31`) so warm-up happens there. If
 XGBoost isn't loaded, `get_explainer()` returns `None` and
-`predict.py:37` substitutes an empty explanation.
+`predict.py:37-38` substitutes an empty explanation.
 
 ## Custom Prometheus metrics, `serving/app/metrics.py`
 
@@ -334,10 +337,10 @@ Four custom metrics live there:
 
 | Metric | Type | Labels | Emitted at |
 |---|---|---|---|
-| `inference_latency_seconds` | Histogram | `model_name` | `predict.py:96`, `152` |
-| `inference_total` | Counter | `model_name`, `prediction` | `predict.py:97-99`, `153-155` |
-| `inference_errors_total` | Counter | `model_name` | `predict.py:65`, `90-92`, `119`, `146-148` |
-| `ab_test_assignments_total` | Counter | `model_variant` | `predict.py:71-73`, `129-131` |
+| `inference_latency_seconds` | Histogram | `model_name` | `predict.py:101`, `158` |
+| `inference_total` | Counter | `model_name`, `prediction` | `predict.py:102-104`, `159-161` |
+| `inference_errors_total` | Counter | `model_name` | `predict.py:67`, `97`, `124`, `154` |
+| `ab_test_assignments_total` | Counter | `model_variant` | `predict.py:73-75`, `134-136` |
 
 Histogram buckets (`metrics.py:9`) are `[5ms, 10ms, 25ms, 50ms, 100ms,
 250ms, 500ms, 1s]`. Most XGBoost predictions take 5-15ms; SHAP adds
@@ -348,7 +351,13 @@ Alerts](07-monitoring.md)).
 
 - **`model_name`** combines the MLflow name and the alias,
   `fraud-xgboost-champion`, `fraud-autoencoder-challenger`. Good for
-  slicing latency / throughput by which model was used.
+  slicing latency / throughput by which model was used. The error
+  counter uses the same values (the full name is resolved before
+  predicting, `predict.py:80-87`), so a PromQL join of errors against
+  totals matches label-for-label; an earlier version labelled errors
+  with the bare alias, which silently broke such joins. The only
+  exception is `model_name="unknown"` on the no-models-loaded 503,
+  where there is no model to name.
 - **`prediction`** is just `"fraud"` / `"legit"`, used by the
   fraud-rate panel in Grafana.
 - **`model_variant`** is `"champion"` / `"challenger"`, used by the
@@ -358,26 +367,28 @@ All four labels have *low cardinality* (bounded by model count, fraud
 label, variant). If you added a `transaction_id` label by mistake,
 Prometheus would explode, see [07 § Cardinality risk](07-monitoring.md).
 
-## The predict handler, `serving/app/routes/predict.py:59-110`
+## The predict handler, `serving/app/routes/predict.py:61-115`
 
 End-to-end flow for a single request:
 
 1. **Validate**, FastAPI runs the Pydantic validator on
    `TransactionRequest`; bad input returns 422 before we get here.
-2. **Guard against no models** (`:64-66`), return 503 if neither
+2. **Guard against no models** (`:66-68`), return 503 if neither
    model is loaded.
-3. **Route** (`:68-73`), call `_select_model`, increment
+3. **Route** (`:70-75`), call `_select_model`, increment
    `AB_ASSIGNMENTS`.
-4. **Prep features** (`:76`), apply the 5 engineered features to the
+4. **Prep features** (`:77-78`), apply the engineered features to the
    raw 30 floats.
-5. **Predict** (`:79-88`), call the right model's `predict_*`,
+5. **Resolve the model name** (`:80-87`), so error metrics carry the
+   same label scheme as the success metrics.
+6. **Predict** (`:89-98`), call the right model's `predict_*`,
    record errors on exception.
-6. **Explain** (`:88`), SHAP if XGBoost, else empty.
-7. **Record metrics** (`:95-99`), latency histogram, prediction
+7. **Explain** (`:92-95`), SHAP if XGBoost, else empty.
+8. **Record metrics** (`:100-104`), latency histogram, prediction
    counter.
-8. **Respond**, build and return the `PredictionResponse`.
+9. **Respond**, build and return the `PredictionResponse`.
 
-The batch endpoint (`:113-175`) repeats steps 3-7 in a loop over up
+The batch endpoint (`:118-181`) repeats steps 3-8 in a loop over up
 to 1000 transactions, but skips the SHAP explanation and reports a
 single `total_latency_ms` plus per-item latencies.
 
@@ -420,7 +431,7 @@ models.
 
 ## Limitations
 
-- **Single instance, single process.** `docker-compose.yml:115-132`
+- **Single instance, single process.** `docker-compose.yml:122-148`
   runs exactly one `serving` container. No horizontal scaling, no
   rolling deploys. The `SERVING_WORKERS=1` env variable (in
   `.env.example:35`) is the knob to turn it up; the container would

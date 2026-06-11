@@ -265,8 +265,9 @@ part of any pipeline. It exists to make two things vivid:
   you can eyeball which features matter most.
 
 Nothing downstream depends on the notebook, it's diagnostic. It's
-committed so a reader can `jupyter lab` into it and see the data
-without re-running the pipeline.
+committed *executed* — with cell outputs in place — so the charts
+render directly on GitHub and a reader sees the plots without needing
+the dataset or a Jupyter kernel at all.
 
 ## The `retrain` DAG
 
@@ -276,20 +277,24 @@ File: `airflow/dags/retrain_dag.py` (149 lines).
 validate_features  >>  train_xgboost  >>  evaluate_and_promote
 ```
 
-Schedule: manual trigger only (`schedule=None` at `retrain_dag.py:132`).
+Schedule: manual trigger only (`schedule=None` at `retrain_dag.py:136`).
 This is a demo stack that isn't continuously running, so a cron schedule
 would only accumulate failed runs between sessions. In production you
 would set e.g. `@weekly` — a realistic cadence for fraud model
 refreshes; the schedule is a one-line change, and the interesting part
 (the gated promotion below) is identical either way.
 
-### Task 1, `validate_features` (`retrain_dag.py:53-72`)
+### Task 1, `validate_features` (`retrain_dag.py:53-76`)
 
 Checks `data/processed/features.parquet` exists and has all expected
 columns (V1-V28, `Amount`, `Class`, plus the four engineered features
-defined at `retrain_dag.py:43-50`).
+defined at `retrain_dag.py:43-50`). The column check reads the parquet
+*schema* (`pyarrow.parquet.read_schema`) rather than loading the data
+with `columns=`: passing an expected-column list to `read_parquet`
+would make pandas raise its own error on a missing column before the
+validation could produce a readable one.
 
-### Task 2, `train_xgboost` (`retrain_dag.py:75-107`)
+### Task 2, `train_xgboost` (`retrain_dag.py:79-111`)
 
 Runs `training/train_xgboost.py` as a **subprocess** inside the Airflow
 container. This works because `./training` is volume-mounted read-only
@@ -312,7 +317,7 @@ training dependencies, which puffs it up. A real production setup
 would hand the work off to a separate training container so Airflow
 stays a pure orchestrator.
 
-### Task 3, `evaluate_and_promote` (`retrain_dag.py:110-125`)
+### Task 3, `evaluate_and_promote` (`retrain_dag.py:114-129`)
 
 The interesting part. The training script deliberately only *registers*
 a new model version — it never moves the `champion` alias itself (see

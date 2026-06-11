@@ -65,7 +65,7 @@ postgres:
   wiped by `docker compose down -v` (that's what `make down-volumes`
   does).
 
-### MLflow, `docker-compose.yml:55-82`
+### MLflow, `docker-compose.yml:55-89`
 
 ```yaml
 mlflow:
@@ -90,10 +90,10 @@ mlflow:
   machine, scattering artifacts across hosts (a classic MLflow
   misconfiguration).
 - **`mlflow_artifacts` volume**, this named volume is shared with the
-  serving container (`docker-compose.yml:125`). See
+  serving container (`docker-compose.yml:132`). See
   [Shared artifacts volume](#shared-artifacts-volume-why) below.
 
-### Airflow, `docker-compose.yml:87-111`
+### Airflow, `docker-compose.yml:94-118`
 
 Three containers built from the same image (`airflow/Dockerfile`) using a
 YAML anchor (`x-airflow-common: &airflow-common` at lines 9-22) to avoid
@@ -116,7 +116,7 @@ image (`airflow/Dockerfile`) installs the training dependencies (minus
 torch — the DAG only retrains XGBoost), pinned to the same versions as
 `training/requirements.txt`.
 
-### FastAPI serving, `docker-compose.yml:115-132`
+### FastAPI serving, `docker-compose.yml:122-148`
 
 ```yaml
 serving:
@@ -128,13 +128,26 @@ serving:
     - mlflow_artifacts:/app/mlartifacts   # shared with mlflow
   depends_on:
     postgres: { condition: service_healthy }
-    mlflow:   { condition: service_started }
+    mlflow:   { condition: service_healthy }
+  healthcheck:
+    test: ["CMD", "python", "-c", "... status == 'healthy' ..."]
 ```
 
-- **`depends_on` is weak**, `service_started` on MLflow only waits for
-  the container to exist, not for MLflow to be ready to serve requests.
-  The startup code in `serving/app/main.py:24-33` is what actually
-  retries model loads; this is documented on the serving page.
+- **`depends_on` waits for MLflow to be ready, not just started.**
+  MLflow has its own compose healthcheck (a python `urllib` probe of
+  its `/health` endpoint — the image has no curl), and serving uses
+  `condition: service_healthy` on it. That matters because serving
+  loads its models once, at startup: with the old `service_started`
+  condition it could race a still-booting MLflow, fail the load, and
+  sit in degraded mode until someone restarted it.
+- **Serving's own healthcheck checks model state, not just liveness.**
+  `GET /health` always returns 200; the probe parses the JSON and
+  exits nonzero unless `status` is `"healthy"` (both models loaded).
+  So `docker compose ps` tells you whether the API can actually score,
+  which makes `make up` self-verifying. On a fresh clone with no
+  trained models the container reports *unhealthy* — that is accurate,
+  not a bug: train, then restart serving (the README quickstart's
+  order).
 - **Port 8000**, both `/predict` and `/metrics` live on it. Prometheus
   scrapes `serving:8000/metrics` every 15s.
 - **Code is baked into the image, not bind-mounted.** The Dockerfile's
@@ -146,7 +159,7 @@ serving:
   every build, adding ~2 GB of dead weight and making the context
   transfer take minutes instead of milliseconds.
 
-### Prometheus, `docker-compose.yml:136-149`
+### Prometheus, `docker-compose.yml:152-165`
 
 ```yaml
 prometheus:
@@ -166,7 +179,7 @@ prometheus:
   you want Prometheus data to survive `docker compose down -v`, add a
   `prometheus_data` volume.
 
-### Grafana, `docker-compose.yml:153-165`
+### Grafana, `docker-compose.yml:169-181`
 
 ```yaml
 grafana:
@@ -189,7 +202,7 @@ Two services mount the same named volume `mlflow_artifacts`:
 | Service | Mount | Line |
 |---|---|---|
 | `mlflow` | `mlflow_artifacts:/app/mlartifacts` | `docker-compose.yml:65` |
-| `serving` | `mlflow_artifacts:/app/mlartifacts` | `docker-compose.yml:125` |
+| `serving` | `mlflow_artifacts:/app/mlartifacts` | `docker-compose.yml:132` |
 
 The MLflow server stores all artifacts (the XGBoost booster, the
 autoencoder weights, `scaler.pkl`) in this volume — it is the server's
@@ -209,7 +222,7 @@ two services onto different hosts.
 
 ## The network: `fraud-net`
 
-One bridge network, defined at `docker-compose.yml:167-170`:
+One bridge network, defined at `docker-compose.yml:183-186`:
 
 ```yaml
 networks:

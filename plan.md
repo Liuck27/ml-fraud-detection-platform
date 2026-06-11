@@ -167,7 +167,7 @@ All runs log hyperparameters, metrics, and model artifacts to MLflow. Registry a
 
 **SHAP Explanations:** Top contributing features on every `/predict` response (e.g. "V14 pushed score up by 0.3"). Uses SHAP TreeExplainer for XGBoost. Important for compliance and trust.
 
-**Model loading:** On startup, load champion + challenger from MLflow registry. Fallback to local artifact cache if MLflow is unreachable.
+**Model loading:** On startup, load champion + challenger from MLflow registry. If MLflow is unreachable or a model is missing, the API starts in degraded mode: `/health` reports per-model status and `/predict` returns 503 until the models load.
 
 ### d) Monitoring & Drift Detection
 
