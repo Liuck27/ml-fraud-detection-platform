@@ -262,10 +262,13 @@ Every service has its own `requirements.txt` and its own `.venv/`:
   (Celery, Flask, SQLAlchemy versions, etc). Letting it share an env
   with modern PyTorch / XGBoost / FastAPI almost always triggers
   a resolver conflict.
-- **Training vs serving drift.** Training needs `torch`, `xgboost`, and
-  `imblearn` (heavy). Serving only needs `mlflow` client + `xgboost`
-  runtime + `shap` + `fastapi`. Separating them keeps the serving image
-  small and fast to rebuild.
+- **Training vs serving drift.** The split is about isolation and
+  pinning, not image size: serving still ships `torch` (the autoencoder
+  pyfunc runs in-process) and `xgboost`, pinned to the exact training
+  versions. What serving *doesn't* carry is the train-only tooling —
+  `imblearn`, `matplotlib`, `jupyter` — and keeping the requirement
+  files separate means a training-side dependency change can't silently
+  alter inference behaviour.
 - **Evidently is version-sensitive.** Its metric API has changed a lot
   across minor versions; pinning it in its own venv means the training
   venv doesn't have to accommodate an Evidently-compatible pandas

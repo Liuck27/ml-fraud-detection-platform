@@ -81,6 +81,8 @@ class Explanation(BaseModel):
 
 
 class PredictionResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     transaction_id: str
     fraud_probability: float
     is_fraud: bool
@@ -92,6 +94,8 @@ class PredictionResponse(BaseModel):
 
 
 class BatchPredictionItem(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     transaction_id: str
     fraud_probability: float
     is_fraud: bool

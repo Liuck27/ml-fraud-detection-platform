@@ -207,6 +207,11 @@ def reconstruction_errors(model: FraudAutoencoder, X: np.ndarray) -> np.ndarray:
 
 
 def main() -> None:
+    # Seed torch so weight init and batch shuffling are reproducible —
+    # without this, metrics wobble run to run even though the data splits
+    # are already seeded via RANDOM_STATE.
+    torch.manual_seed(RANDOM_STATE)
+
     mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment("fraud-detection-autoencoder")
 

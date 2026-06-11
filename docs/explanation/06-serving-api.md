@@ -115,7 +115,7 @@ The 1-1000 window is enforced by Pydantic, not hand-coded. Reasoning:
 - **Lower bound 1.** A zero-length batch is meaningless; reject at
   validation instead of returning an empty response.
 
-### Response shapes, `schemas.py:83-107`
+### Response shapes, `schemas.py:83-111`
 
 - `PredictionResponse` includes `fraud_probability`, `is_fraud`,
   `model_name` (`fraud-xgboost-champion` or
@@ -127,11 +127,16 @@ The 1-1000 window is enforced by Pydantic, not hand-coded. Reasoning:
 
 ### The `protected_namespaces` escape hatch
 
-`ModelInfo` in `schemas.py:128` sets
-`model_config = ConfigDict(protected_namespaces=())` because Pydantic
-v2 reserves the `model_` prefix by default, which would break fields
-named `model_name` / `model_version`. This is the documented
-work-around.
+Pydantic v2 reserves the `model_` prefix by default and warns on any
+field that starts with it. This codebase has several such fields by
+necessity (`model_name`, `model_version`, `model_xgboost_name`), so
+every class that declares one clears the namespace — `ModelInfo`,
+`PredictionResponse`, and `BatchPredictionItem` set
+`model_config = ConfigDict(protected_namespaces=())` (`schemas.py:84`,
+`97`, `132`), and `Settings` sets
+`protected_namespaces=("settings_",)` in its `SettingsConfigDict`
+(`config.py:13-15`). This is the documented work-around; without it,
+every import of the app printed six warnings.
 
 ## The model registry, `serving/app/models/loader.py`
 

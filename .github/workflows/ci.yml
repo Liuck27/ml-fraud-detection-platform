@@ -24,7 +24,7 @@ jobs:
           key: lint-${{ hashFiles('requirements-dev.txt') }}
 
       - name: Install lint tools
-        run: pip install ruff==0.1.9 black==23.12.1
+        run: pip install ruff==0.1.9 "black[jupyter]==23.12.1"
 
       - name: ruff check
         run: ruff check .

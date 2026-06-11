@@ -25,7 +25,7 @@ compressed representation. Things it reproduces poorly are "weird".
 **In this codebase.** XGBoost (`training/train_xgboost.py`) is
 supervised: it uses the `Class` column (0/1). The autoencoder
 (`training/train_autoencoder.py`) is unsupervised: it only sees
-non-fraud rows (line 228 masks `y_train == 0`) and is judged by how
+non-fraud rows (line 233 masks `y_train == 0`) and is judged by how
 badly it reconstructs fraud.
 
 **Limits.** Supervised needs labels, which are expensive when fraud is
@@ -264,7 +264,7 @@ so both models look the same to the serving layer.
 
 - No SHAP explanations (TreeExplainer doesn't apply to neural nets;
   KernelExplainer is too slow for serving, see [§9](#9-shap-values)).
-- The 99th-percentile-of-legit trick (`train_autoencoder.py:246-251`)
+- The 99th-percentile-of-legit trick (`train_autoencoder.py:251-256`)
   is pragmatic but not principled.
 - Autoencoders can silently "memorise" training data if the bottleneck
   is too large; 33 -> 16 is aggressive enough here.
