@@ -54,7 +54,6 @@ def _make_registry(xgb_loaded: bool = True, ae_loaded: bool = True) -> Any:
 
     real = ModelRegistry()
     reg.prepare_features = real.prepare_features
-    reg.prepare_features_batch = real.prepare_features_batch
 
     # Prediction stubs
     reg.predict_xgb.return_value = (0.03, False)
@@ -62,7 +61,7 @@ def _make_registry(xgb_loaded: bool = True, ae_loaded: bool = True) -> Any:
 
     # Scaler stub for SHAP path
     mock_scaler = MagicMock()
-    mock_scaler.transform.return_value = np.zeros((1, 33))
+    mock_scaler.transform.return_value = np.zeros((1, 32))
     reg._xgb_scaler = mock_scaler
 
     return reg

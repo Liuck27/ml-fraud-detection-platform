@@ -45,8 +45,8 @@ Consequences:
 - **Small enough.** ~150 MB, 284k rows, fits in memory, trains in
   minutes, fast iteration.
 - **Imbalanced enough.** 0.172% positive rate forces you to confront
-  the three class-imbalance countermeasures
-  (SMOTE, `scale_pos_weight`, threshold tuning, see
+  real class-imbalance countermeasures
+  (SMOTE, threshold tuning, see
   [02 § Class imbalance](02-ml-concepts.md#class-imbalance)) rather than
   faking the problem on a balanced dataset.
 
@@ -103,7 +103,7 @@ Parquet files.
 
 ## The `data_ingestion` DAG
 
-File: `airflow/dags/data_ingestion_dag.py` (99 lines).
+File: `airflow/dags/data_ingestion_dag.py` (98 lines).
 
 ```
 validate_csv  >>  engineer_and_write
@@ -134,11 +134,11 @@ Fails loudly if the CSV isn't what we expect:
 - **Fraud count.** Logs the actual positive rate, useful sanity
   check that prints e.g. `284,807 rows, 492 frauds (0.173%)`.
 
-### Task 2, `engineer_and_write` (`data_ingestion_dag.py:54-78`)
+### Task 2, `engineer_and_write` (`data_ingestion_dag.py:54-77`)
 
 Reads the raw CSV, applies `engineer_features()` (below), writes Parquet
 to `data/processed/features.parquet`. The final DataFrame has the
-original 31 columns plus 5 engineered columns (36 total).
+original 31 columns plus 4 engineered columns (35 total).
 
 ### Idempotency
 
@@ -153,7 +153,7 @@ it is safe.
 
 ## Feature engineering
 
-File: `airflow/plugins/feature_engineering.py` (55 lines, pure
+File: `airflow/plugins/feature_engineering.py` (56 lines, pure
 functions).
 
 These functions deliberately live in `airflow/plugins/` rather than
@@ -166,7 +166,7 @@ the serving container recreates the same transforms in
 Each function takes a DataFrame and returns a *new* DataFrame with
 additional columns. No mutation, no I/O, trivial to test.
 
-### `log_transform_amount` → `amount_log` (`feature_engineering.py:20-24`)
+### `log_transform_amount` → `amount_log` (`feature_engineering.py:25-29`)
 
 ```python
 out["amount_log"] = np.log1p(out["Amount"])
@@ -184,7 +184,7 @@ out["amount_log"] = np.log1p(out["Amount"])
   still helps in practice because the autoencoder and SHAP rendering
   benefit from a less skewed scale.
 
-### `extract_time_features` → `hour_of_day`, `is_night` (`feature_engineering.py:27-36`)
+### `extract_time_features` → `hour_of_day`, `is_night` (`feature_engineering.py:32-41`)
 
 ```python
 out["hour_of_day"] = (out["Time"] // 3600 % 24).astype(int)
@@ -203,33 +203,27 @@ out["is_night"] = out["hour_of_day"].apply(lambda h: h >= 22 or h < 6)
   real wall clock. Hour-of-day is an *approximation*. In a production
   system you'd use the transaction's actual timezone-aware timestamp.
 
-### `compute_interaction_features` → `amount_zscore`, `v1_v2_interaction` (`feature_engineering.py:39-46`)
+### `compute_interaction_features` → `v1_v2_interaction` (`feature_engineering.py:44-49`)
 
 ```python
-mu = out["Amount"].mean()
-sigma = out["Amount"].std(ddof=0)
-out["amount_zscore"] = (out["Amount"] - mu) / sigma if sigma > 0 else 0.0
 out["v1_v2_interaction"] = out["V1"] * out["V2"]
 ```
 
-- **`amount_zscore`** standardises `Amount` against the *batch*'s mean
-  and stdev. On the full training batch this produces a sensible Z-score
-  centred at 0.
-  - **Subtle issue**: at serving time a single-row request has mean =
-    the row's own amount, stdev = 0, and the formula short-circuits to
-    `0.0`. The serving loader is aware of this, it either falls back
-    to 0 (single row) or recomputes batch-wise (batch endpoint). See
-    [06, Serving API § Model loader](06-serving-api.md) for the full
-    story. In production you'd use the *training-time* mean and stdev
-    (a fitted scaler) for consistency, not the current-batch stats.
 - **`v1_v2_interaction`** is `V1 * V2`. Interaction terms let linear
   models capture effects that depend on two features jointly (a
   particular combination of PCA components correlating with fraud).
   For a tree model like XGBoost this is partly redundant because trees
   discover interactions implicitly via splits. It's kept because it's
   a common convention and doesn't hurt.
+- **A removed sibling**: this function used to also compute a
+  batch-level `amount_zscore` (Amount standardised against the current
+  batch's mean/stdev). It was dropped because the statistic depended on
+  whatever rows happened to be in the batch — leaking validation rows
+  into training, and impossible to reproduce for a single-row serving
+  request. `amount_log` plus the model's `StandardScaler` carry the
+  same signal without the skew.
 
-### `engineer_features` (`feature_engineering.py:49-54`)
+### `engineer_features` (`feature_engineering.py:51-56`)
 
 The composition pipeline, calls the three transforms in sequence:
 
@@ -254,10 +248,6 @@ function, not the individual transforms.
 - **No time-series targets.** No "is this transaction's country
   different from the last 10 on this card?" because there's no last
   10.
-- **`amount_zscore` is row-batch-dependent.** A real production
-  pipeline would save training-time statistics and apply them at
-  inference, not compute fresh stats per batch. This is a known trade-off
-  the codebase accepts explicitly.
 
 ## The EDA notebook
 
@@ -280,26 +270,26 @@ without re-running the pipeline.
 
 ## The `retrain` DAG
 
-File: `airflow/dags/retrain_dag.py` (150 lines).
+File: `airflow/dags/retrain_dag.py` (149 lines).
 
 ```
 validate_features  >>  train_xgboost  >>  evaluate_and_promote
 ```
 
-Schedule: manual trigger only (`schedule=None` at `retrain_dag.py:133`).
+Schedule: manual trigger only (`schedule=None` at `retrain_dag.py:132`).
 This is a demo stack that isn't continuously running, so a cron schedule
 would only accumulate failed runs between sessions. In production you
 would set e.g. `@weekly` — a realistic cadence for fraud model
 refreshes; the schedule is a one-line change, and the interesting part
 (the gated promotion below) is identical either way.
 
-### Task 1, `validate_features` (`retrain_dag.py:54-73`)
+### Task 1, `validate_features` (`retrain_dag.py:53-72`)
 
 Checks `data/processed/features.parquet` exists and has all expected
-columns (V1-V28, `Amount`, `Class`, plus the five engineered features
-defined at `retrain_dag.py:43-51`).
+columns (V1-V28, `Amount`, `Class`, plus the four engineered features
+defined at `retrain_dag.py:43-50`).
 
-### Task 2, `train_xgboost` (`retrain_dag.py:76-108`)
+### Task 2, `train_xgboost` (`retrain_dag.py:75-107`)
 
 Runs `training/train_xgboost.py` as a **subprocess** inside the Airflow
 container. This works because `./training` is volume-mounted read-only
@@ -322,13 +312,13 @@ training dependencies, which puffs it up. A real production setup
 would hand the work off to a separate training container so Airflow
 stays a pure orchestrator.
 
-### Task 3, `evaluate_and_promote` (`retrain_dag.py:111-126`)
+### Task 3, `evaluate_and_promote` (`retrain_dag.py:110-125`)
 
 The interesting part. The training script deliberately only *registers*
 a new model version — it never moves the `champion` alias itself (see
 [05 § Registration vs. promotion](05-training.md)). This task is the
 quality gate, and it delegates to **the same function** host-side runs
-use: `promote_champion_if_better` in `training/model_registry.py:42-90`
+use: `promote_champion_if_better` in `training/model_registry.py:43-91`
 (importable thanks to the volume mount). The rule:
 
 1. Find the just-registered version of `fraud-xgboost`.
@@ -366,8 +356,7 @@ The engineered features appear in three places:
   , read the Parquet from step 1, so they inherit the definition
    transitively.
 3. **`serving/app/models/loader.py`**, re-implements the same
-   transforms on the inference path (the single `amount_zscore = 0`
-   hack lives here).
+   transforms on the inference path for single-row requests.
 
 If you change `feature_engineering.py`, you must also update the
 serving prep function, or training-serving skew silently breaks model
@@ -381,5 +370,4 @@ for why Feast wasn't worth it here.
 - [05, Training](05-training.md) picks up where the DAG leaves off:
   how the Parquet becomes a model registered in MLflow.
 - [06, Serving API](06-serving-api.md) is where the
-  training-serving feature prep lives, look there for the
-  `amount_zscore = 0` quirk in detail.
+  training-serving feature prep lives.

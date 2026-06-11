@@ -114,7 +114,6 @@ flowchart TD
 
 Added on top of the raw V1-V28 + Amount:
 - `amount_log`, log1p(Amount), reduces skew
-- `amount_zscore`, Z-score normalized Amount
 - `hour_of_day`, derived from Time field
 - `is_night`, 22:00-06:00 flag
 - `v1_v2_interaction`, V1 * V2 interaction term
@@ -125,9 +124,9 @@ No rolling windows or aggregations, the dataset has no user/card grouping to rol
 
 The dataset is 99.83% legitimate / 0.17% fraud:
 
-1. **Training**: SMOTE oversampling + `scale_pos_weight` in XGBoost
-2. **Evaluation**: Precision, recall, F1, AUC-ROC, and PR-AUC (more informative than ROC-AUC on imbalanced data)
-3. **Threshold tuning**: Optimize on the precision-recall curve based on a cost ratio (missed fraud costs more than a false alarm)
+1. **Training**: SMOTE oversampling on the training split (a single imbalance strategy — combining it with class weighting would double-correct)
+2. **Evaluation**: Precision, recall, F1, AUC-ROC, and PR-AUC (more informative than ROC-AUC on imbalanced data), reported on a held-out test set
+3. **Threshold tuning**: Optimize on the precision-recall curve based on a cost ratio (missed fraud costs more than a false alarm), tuned on a validation split separate from the test set
 4. **Anomaly detection**: The autoencoder learns "normal" transactions only, fraud shows up as high reconstruction error
 
 ---
@@ -146,8 +145,8 @@ Orchestrates data loading, validation, and feature computation. The retraining D
 
 **Two models, different approaches:**
 
-1. **XGBoost Classifier** (champion), supervised, trained on all labeled data with SMOTE + `scale_pos_weight`
-2. **PyTorch Autoencoder** (challenger), unsupervised anomaly detection, trained on legitimate transactions only; fraud = high reconstruction error (MSE above threshold); architecture: Input(30) → 64 → 32 → 16 → 32 → 64 → Output(30)
+1. **XGBoost Classifier** (champion), supervised, trained on all labeled data with SMOTE
+2. **PyTorch Autoencoder** (challenger), unsupervised anomaly detection, trained on legitimate transactions only; fraud = high reconstruction error (MSE above threshold); architecture: Input(32) → 64 → 32 → 16 → 32 → 64 → Output(32)
 
 XGBoost is the reliable workhorse for tabular data. The autoencoder shows a different angle: unsupervised anomaly detection that doesn't need fraud labels. Comparing them via A/B testing mirrors how teams evaluate model alternatives in practice.
 

@@ -25,7 +25,7 @@ compressed representation. Things it reproduces poorly are "weird".
 **In this codebase.** XGBoost (`training/train_xgboost.py`) is
 supervised: it uses the `Class` column (0/1). The autoencoder
 (`training/train_autoencoder.py`) is unsupervised: it only sees
-non-fraud rows (line 209 masks `y_train == 0`) and is judged by how
+non-fraud rows (line 226 masks `y_train == 0`) and is judged by how
 badly it reconstructs fraud.
 
 **Limits.** Supervised needs labels, which are expensive when fraud is
@@ -44,21 +44,21 @@ ignoring positives entirely. 0.17% fraud means "always predict legit" is
 recall is 50% (you catch half the fraud) but precision is only 2%, you're
 still drowning your fraud team in false alarms.
 
-**In this codebase.** The project uses **three** countermeasures stacked,
-because each alone is insufficient:
+**In this codebase.** Two countermeasures, deliberately not stacked:
 
-1. **SMOTE** oversampling in training (`train_xgboost.py:123-124`),
-   see [§3](#3-smote).
-2. **`scale_pos_weight`** passed to XGBoost (`train_xgboost.py:91, 97`),
-   multiplies the loss contribution of positive examples by
-   `n_neg / n_pos` (about 580 for this dataset). "Belt and suspenders"
-   alongside SMOTE per the code comment on line 91.
-3. **Threshold tuning** on the PR curve with an asymmetric cost
+1. **SMOTE** oversampling in training, see [§3](#3-smote). This is the
+   *single* rebalancing strategy. XGBoost's `scale_pos_weight` (class
+   weighting in the loss) is intentionally **not** used: after SMOTE the
+   training classes are already 1:1, so a weight computed there is ~1.0
+   and does nothing — and applying both on the original distribution
+   would double-correct the imbalance. One strategy, applied once, that
+   the code can actually defend.
+2. **Threshold tuning** on the PR curve with an asymmetric cost
    (`evaluate.py:47-72`), see [§5](#5-decision-threshold-tuning).
 
 **Limits.** Over-sampling can cause the model to over-fit to synthetic
-minority examples; too-high `scale_pos_weight` over-predicts fraud
-everywhere, destroying precision.
+minority examples; that is why metrics are reported on a held-out test
+set that SMOTE never touches.
 
 ---
 
@@ -76,7 +76,7 @@ neighbours. Pick one, `x_j`. Generate a synthetic point along the line:
 Repeat until classes are balanced.
 
 **In this codebase.** `imblearn.over_sampling.SMOTE` is applied *after*
-scaling and *only* to the training split (`train_xgboost.py:122-128`).
+scaling and *only* to the training split (`train_xgboost.py:130-136`).
 It is never applied to the validation set, doing so would leak
 synthetic data into evaluation and give you a falsely optimistic score.
 
@@ -87,7 +87,7 @@ synthetic data into evaluation and give you a falsely optimistic score.
   land in "empty" regions that aren't actually fraud.
 - It amplifies any noise in the minority labels.
 - In high dimensions, nearest-neighbour distances become less
-  meaningful. This dataset is only 33 dimensions, so SMOTE is fine.
+  meaningful. This dataset is only 32 dimensions, so SMOTE is fine.
 
 Further reading: Chawla et al., "SMOTE: Synthetic Minority
 Over-sampling Technique", JAIR 2002.
@@ -120,7 +120,7 @@ don't depend on picking one.
 **In this codebase.** `training/evaluate.py:25-44` logs **both** metrics
 for every run. The `plan.md` acceptance target (AUC-ROC > 0.95) is the
 headline number; PR-AUC is the one the project uses to compare models
-honestly (the promotion gate in `model_registry.py:42-90` — called from
+honestly (the promotion gate in `model_registry.py:43-91` — called from
 both `make promote` and the retrain DAG — compares candidates on
 PR-AUC, not AUC-ROC).
 
@@ -164,9 +164,12 @@ for t in thresholds:           # thresholds come from precision_recall_curve
 ```
 
 The default ratio `cost_fn=10, cost_fp=1` (line 51) encodes "missing a
-fraud is 10x worse than a false alarm". The chosen threshold is logged
-as an MLflow metric (`train_xgboost.py:135, 148`) and later fetched by
-the serving layer (`serving/app/models/loader.py:103`) so training and
+fraud is 10x worse than a false alarm". The threshold is tuned on the
+**validation** split, while the metrics that get reported (and that the
+promotion gate compares) come from a separate held-out **test** split —
+tuning and scoring on the same data would inflate the numbers. The
+chosen threshold is logged as an MLflow metric and later fetched by
+the serving layer (`serving/app/models/loader.py:102`) so training and
 serving use the **same** cutoff.
 
 **Limits.**
@@ -195,15 +198,15 @@ binary classification with log-loss, those residuals are `y - p`.
 
 **In this codebase.**
 
-- `training/train_xgboost.py:93-102` configures XGBoost:
+- `training/train_xgboost.py:90-103` configures XGBoost:
   300 trees, max depth 6, learning rate 0.05,
-  `eval_metric="aucpr"` (optimises PR-AUC directly),
-  `scale_pos_weight` for imbalance.
+  `eval_metric="aucpr"` (optimises PR-AUC directly).
 - SMOTE runs before `fit`, so the model effectively trains on a
-  balanced dataset even though the raw one isn't.
+  balanced dataset even though the raw one isn't. That is also why
+  `scale_pos_weight` is absent: on 1:1 data it would be a no-op.
 - The trained booster is logged to MLflow as
-  `mlflow.xgboost.log_model` (lines 163-168) along with the fitted
-  `StandardScaler` as a separate artifact (lines 156-160). The scaler
+  `mlflow.xgboost.log_model` (lines 182-187) along with the fitted
+  `StandardScaler` as a separate artifact (lines 173-179). The scaler
   is logged separately because XGBoost's native format doesn't know
   about scikit-learn transforms.
 
@@ -230,11 +233,11 @@ it **normal** transactions during training, it gets really good at
 reconstructing normal and really bad at reconstructing fraud. The
 reconstruction error becomes your anomaly score.
 
-**Architecture used here** (`train_autoencoder.py:70-98`):
+**Architecture used here** (`train_autoencoder.py:80-100`):
 
 ```
-Input(33) -> Linear(64) -> ReLU -> Linear(32) -> ReLU -> Linear(16) -> ReLU
-          -> Linear(32) -> ReLU -> Linear(64) -> ReLU -> Linear(33)
+Input(32) -> Linear(64) -> ReLU -> Linear(32) -> ReLU -> Linear(16) -> ReLU
+          -> Linear(32) -> ReLU -> Linear(64) -> ReLU -> Linear(32)
 ```
 
 The decoder mirrors the encoder, a common convention, not a hard rule.
@@ -244,16 +247,16 @@ The decoder mirrors the encoder, a common convention, not a hard rule.
 `e(x) = mean((x - f(x))^2)` and compare to a threshold.
 
 **Turning error into probability.** A raw reconstruction error isn't
-bounded. The pyfunc wrapper (`train_autoencoder.py:123-138`) normalises
+bounded. The pyfunc wrapper (`train_autoencoder.py:132-147`) normalises
 by dividing by `2 * threshold` and clipping to `[0, 1]`. That's a
 pragmatic choice, it keeps the response shape identical to XGBoost's
 so both models look the same to the serving layer.
 
 **In this codebase.**
 
-- Trained on legit rows only (`train_autoencoder.py:209-213`).
+- Trained on legit rows only (`train_autoencoder.py:226-231`).
 - Saved via TorchScript (`torch.jit.script`) so it can load inside
-  MLflow without the original PyTorch class definition (lines 273-274).
+  MLflow without the original PyTorch class definition (lines 296-297).
 - Wrapped as an `mlflow.pyfunc.PythonModel` that handles scaling +
   inference + error-to-probability mapping in one `predict()` call.
 
@@ -261,7 +264,7 @@ so both models look the same to the serving layer.
 
 - No SHAP explanations (TreeExplainer doesn't apply to neural nets;
   KernelExplainer is too slow for serving, see [§9](#9-shap-values)).
-- The 99th-percentile-of-legit trick (`train_autoencoder.py:228-232`)
+- The 99th-percentile-of-legit trick (`train_autoencoder.py:244-249`)
   is pragmatic but not principled.
 - Autoencoders can silently "memorise" training data if the bottleneck
   is too large; 33 -> 16 is aggressive enough here.
@@ -432,7 +435,7 @@ within +/- 2% of 20% challenger).
 
 **Intuition.** The raw Kaggle dataset provides 28 PCA components
 (`V1`-`V28`) plus `Time` and `Amount`. The PCA features are already
-highly informative; this project adds five derived features that
+highly informative; this project adds four derived features that
 capture patterns the raw fields miss.
 
 **The engineered features** (from
@@ -441,19 +444,18 @@ capture patterns the raw fields miss.
 | Feature | Formula | What it captures |
 |---|---|---|
 | `amount_log` | `log1p(Amount)` | Reduces the heavy right-skew of Amount. Long-tail fraud loses its disproportionate influence on tree splits. |
-| `amount_zscore` | `(Amount - mean) / std` | Deviation from typical spend, normalised so it's comparable across batches. In single-row serving this is 0 (see below). |
 | `hour_of_day` | `(Time // 3600) % 24` | Fraud tends to cluster at odd hours. Time is seconds since the first transaction in the dataset, not a real clock, so this is an **approximation**. |
 | `is_night` | `hour_of_day in [22, 23, 0..5]` | Boolean proxy for off-hours fraud. |
 | `v1_v2_interaction` | `V1 * V2` | A hand-made product feature. V1 and V2 are the most predictive PCA components. Tree boosters learn interactions already, but an explicit term sometimes helps convergence. |
 
-**The amount_zscore quirk.** In
-`serving/app/models/loader.py:160`, single-row inference sets
-`amount_zscore = 0.0`. There's no way to compute a meaningful
-standard deviation from one row. Batch inference on line 193 does
-compute a batch-level z-score. This is a real-world inconsistency:
-a single-row serving request loses the zscore signal. The fix in a
-real system is to compute z-score against a rolling window of recent
-transactions.
+**Why no `amount_zscore`?** An earlier version also computed a
+batch-level z-score of Amount. It was removed: computed over the whole
+dataset before the split it leaked validation statistics into training,
+and at serving time a single-row request has no batch to standardise
+against (the code hardcoded `0.0` — training/serving skew). `amount_log`
+plus the model's StandardScaler carry the same signal cleanly. A real
+system wanting this feature would compute it against a rolling window
+of recent transactions, frozen as a model artifact.
 
 **Limits.**
 
@@ -503,8 +505,8 @@ one-liners for everything on this page.
 | PR-AUC | `evaluate.py:39` |
 | Threshold tuning | `evaluate.py:47-72` |
 | XGBoost | `train_xgboost.py:93-102` |
-| Autoencoder | `train_autoencoder.py:78-98` |
+| Autoencoder | `train_autoencoder.py:80-100` |
 | SHAP | `serving/app/models/explainer.py:22` |
 | A/B hash routing | `serving/app/models/ab_testing.py:24-26` |
-| MLflow registry alias | `model_registry.py:42-90` (gated champion promotion) |
+| MLflow registry alias | `model_registry.py:43-91` (gated champion promotion) |
 | Data drift (Evidently) | `scripts/drift_report.py` |

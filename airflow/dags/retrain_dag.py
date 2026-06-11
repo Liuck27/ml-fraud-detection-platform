@@ -44,7 +44,6 @@ EXPECTED_FEATURE_COLS = {f"V{i}" for i in range(1, 29)} | {
     "Amount",
     "Class",
     "amount_log",
-    "amount_zscore",
     "hour_of_day",
     "is_night",
     "v1_v2_interaction",

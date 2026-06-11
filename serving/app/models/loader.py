@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 # Feature column order must match training/train_xgboost.py exactly.
 FEATURE_COLS: list[str] = [f"V{i}" for i in range(1, 29)] + [
     "amount_log",
-    "amount_zscore",
     "hour_of_day",
     "is_night",
     "v1_v2_interaction",
@@ -150,48 +149,21 @@ class ModelRegistry:
           - amount_log:       log1p(Amount)
           - hour_of_day:      int(Time // 3600 % 24)
           - is_night:         hour_of_day >= 22 or hour_of_day < 6
-          - amount_zscore:    0.0 for single rows (sigma = 0 in a 1-row batch)
           - v1_v2_interaction: V1 * V2
         """
         raw = features.model_dump()
         amount_log = float(np.log1p(raw["Amount"]))
         hour_of_day = int(raw["Time"] // 3600 % 24)
         is_night = float(hour_of_day >= 22 or hour_of_day < 6)
-        amount_zscore = 0.0  # single-row; std = 0 → matches pipeline behaviour
         v1_v2_interaction = raw["V1"] * raw["V2"]
 
         row: dict[str, float] = {f"V{i}": raw[f"V{i}"] for i in range(1, 29)}
         row["amount_log"] = amount_log
-        row["amount_zscore"] = amount_zscore
         row["hour_of_day"] = float(hour_of_day)
         row["is_night"] = is_night
         row["v1_v2_interaction"] = v1_v2_interaction
 
         return pd.DataFrame([row])[FEATURE_COLS]
-
-    def prepare_features_batch(
-        self, features_list: list[TransactionFeatures]
-    ) -> pd.DataFrame:
-        """Prepare a batch of transactions, computing batch-level amount_zscore."""
-        rows = []
-        for features in features_list:
-            raw = features.model_dump()
-            hour_of_day = int(raw["Time"] // 3600 % 24)
-            rows.append(
-                {
-                    **{f"V{i}": raw[f"V{i}"] for i in range(1, 29)},
-                    "Amount": raw["Amount"],
-                    "hour_of_day": float(hour_of_day),
-                    "is_night": float(hour_of_day >= 22 or hour_of_day < 6),
-                    "v1_v2_interaction": raw["V1"] * raw["V2"],
-                }
-            )
-        df = pd.DataFrame(rows)
-        df["amount_log"] = np.log1p(df["Amount"])
-        mu = df["Amount"].mean()
-        sigma = df["Amount"].std(ddof=0)
-        df["amount_zscore"] = (df["Amount"] - mu) / sigma if sigma > 0 else 0.0
-        return df[FEATURE_COLS]
 
     # ------------------------------------------------------------------
     # Prediction

@@ -70,7 +70,6 @@ def engineer_and_write(**_: object) -> None:
 
     new_cols = [
         "amount_log",
-        "amount_zscore",
         "hour_of_day",
         "is_night",
         "v1_v2_interaction",

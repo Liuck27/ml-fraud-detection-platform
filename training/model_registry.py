@@ -13,14 +13,15 @@ def promote_to_champion(model_name: str, version: str | int) -> None:
     """Set the 'champion' alias on the given registered model version."""
     client = MlflowClient()
     client.set_registered_model_alias(model_name, "champion", str(version))
-    print(f"[registry] {model_name} v{version} → champion")
+    # ASCII arrow: '→' crashes print() on Windows cp1252 consoles
+    print(f"[registry] {model_name} v{version} -> champion")
 
 
 def promote_to_challenger(model_name: str, version: str | int) -> None:
     """Set the 'challenger' alias on the given registered model version."""
     client = MlflowClient()
     client.set_registered_model_alias(model_name, "challenger", str(version))
-    print(f"[registry] {model_name} v{version} → challenger")
+    print(f"[registry] {model_name} v{version} -> challenger")
 
 
 def get_latest_version(model_name: str) -> str:

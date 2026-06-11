@@ -137,6 +137,14 @@ serving:
   retries model loads; this is documented on the serving page.
 - **Port 8000**, both `/predict` and `/metrics` live on it. Prometheus
   scrapes `serving:8000/metrics` every 15s.
+- **Code is baked into the image, not bind-mounted.** The Dockerfile's
+  `COPY . /app/serving/` means a serving-code change requires
+  `docker compose build serving` — a restart alone keeps running the
+  old code. `serving/.dockerignore` keeps the local `.venv` (several
+  GB, mostly torch), `tests/`, and tool caches out of the build
+  context; without it the venv was being copied into the image on
+  every build, adding ~2 GB of dead weight and making the context
+  transfer take minutes instead of milliseconds.
 
 ### Prometheus, `docker-compose.yml:136-149`
 

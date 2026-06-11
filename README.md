@@ -130,7 +130,7 @@ curl -s -X POST http://localhost:8000/predict \
 
 ## Key Features
 
-- **Imbalanced data handling**, SMOTE oversampling + `scale_pos_weight` in XGBoost; evaluation on PR-AUC (more honest than ROC-AUC on 0.17% fraud rate)
+- **Imbalanced data handling**, SMOTE oversampling on the training split; evaluation on PR-AUC (more honest than ROC-AUC on 0.17% fraud rate) with a held-out test set
 - **Two model approaches**, XGBoost (supervised, gradient boosted trees) and PyTorch Autoencoder (unsupervised anomaly detection trained on legit transactions only)
 - **A/B testing**, deterministic hash routing (`hash(transaction_id) % 100`) so the same transaction always routes to the same model; split ratio configurable via env var
 - **Explainability**, every `/predict` response includes top SHAP feature contributions explaining why the transaction was or wasn't flagged

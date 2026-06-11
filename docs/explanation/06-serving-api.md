@@ -2,7 +2,7 @@
 
 > **What this page answers:** How a transaction goes from JSON to a
 > scored prediction with SHAP explanation, how the A/B router picks a
-> model, and where the quirks (single-row `amount_zscore=0`,
+> model, and where the quirks (degraded mode,
 > degraded-start behaviour) live.
 
 You should have read [02 § A/B testing](02-ml-concepts.md#a-b-testing-in-ml-serving)
@@ -16,7 +16,7 @@ auto-exposed `/metrics` and `/docs`. Three properties mattered when
 picking FastAPI:
 
 - **Pydantic v2 on every request**, so you get runtime validation for
-  free (33 floats, the right field names, correct types) and an
+  free (30 floats, the right field names, correct types) and an
   auto-generated OpenAPI schema at `/docs`.
 - **Type hints as the API spec.** Function signatures are the contract
  , you change a field in a Pydantic model and the OpenAPI doc, mypy
@@ -53,7 +53,7 @@ Why this matters:
   request would be 200ms slower than subsequent ones. Warming it up
   avoids that tail.
 - **Degraded start is allowed.** `ModelRegistry.load` catches
-  exceptions (`loader.py:115-118`, `137-140`) rather than crashing the
+  exceptions (`loader.py:114-117`, `136-139`) rather than crashing the
   app. If MLflow is down or models aren't registered yet, the API
   starts, `/health` reports `"degraded"`, and `/predict` returns 503.
   This is better than crash-looping because it's debuggable, you
@@ -72,13 +72,13 @@ in `metrics.py` and are emitted from the predict handler manually.
 
 ## Request schema, `serving/app/schemas.py`
 
-### Single prediction, `schemas.py:16-58`
+### Single prediction, `schemas.py:16-60`
 
 ```python
 class TransactionFeatures(BaseModel):
     V1: float; V2: float; ... V28: float
     Amount: float
-    Time: float = 0.0
+    Time: float
 
 class TransactionRequest(BaseModel):
     transaction_id: str
@@ -88,16 +88,18 @@ class TransactionRequest(BaseModel):
 Notes:
 
 - `V1`-`V28` are the PCA components (see [04 § The dataset](04-data-and-features.md#the-dataset)).
-  30 mandatory floats: any missing field returns 422 with a clear
-  validator error.
-- **`Time` defaults to 0.0** (`schemas.py:53`). Real clients who send
-  a timestamp get sensible `hour_of_day` / `is_night`. Clients who
-  omit it get `hour_of_day=0, is_night=False`, which still scores but
-  loses time-of-day signal.
+  All 30 fields are mandatory floats: any missing field returns 422
+  with a clear validator error.
+- **`Time` is required** (`schemas.py:55`), because `hour_of_day` and
+  `is_night` are derived from it. An earlier version defaulted it to
+  0.0, which silently placed every timestamp-less transaction at
+  midnight — an hour that counts as *night*, so the model saw a
+  distorted feature it had learned to trust. A fraud system always has
+  a timestamp; requiring the field is the honest contract.
 - `transaction_id` is an opaque string, the only thing the A/B router
   uses to bucket.
 
-### Batch, `schemas.py:61-64`
+### Batch, `schemas.py:63-66`
 
 ```python
 class BatchRequest(BaseModel):
@@ -113,7 +115,7 @@ The 1-1000 window is enforced by Pydantic, not hand-coded. Reasoning:
 - **Lower bound 1.** A zero-length batch is meaningless; reject at
   validation instead of returning an empty response.
 
-### Response shapes, `schemas.py:81-105`
+### Response shapes, `schemas.py:83-107`
 
 - `PredictionResponse` includes `fraud_probability`, `is_fraud`,
   `model_name` (`fraud-xgboost-champion` or
@@ -125,7 +127,7 @@ The 1-1000 window is enforced by Pydantic, not hand-coded. Reasoning:
 
 ### The `protected_namespaces` escape hatch
 
-`ModelInfo` in `schemas.py:126` sets
+`ModelInfo` in `schemas.py:128` sets
 `model_config = ConfigDict(protected_namespaces=())` because Pydantic
 v2 reserves the `model_` prefix by default, which would break fields
 named `model_name` / `model_version`. This is the documented
@@ -135,23 +137,23 @@ work-around.
 
 `ModelRegistry` is the stateful singleton that holds both models,
 scaler, threshold, and metadata. Singleton via module-level `_registry`
-at `loader.py:228` and `get_registry()` at `:231-232`.
+at `loader.py:200` and `get_registry()` at `:203-204`.
 
-### Feature column contract, `loader.py:32-38`
+### Feature column contract, `loader.py:32-37`
 
 ```python
 FEATURE_COLS: list[str] = [f"V{i}" for i in range(1, 29)] + [
-    "amount_log", "amount_zscore", "hour_of_day",
+    "amount_log", "hour_of_day",
     "is_night", "v1_v2_interaction",
 ]
 ```
 
-Must be identical to `training/train_xgboost.py:54-60` and
-`training/train_autoencoder.py:53-59`. This is the canonical
+Must be identical to `training/train_xgboost.py:59-64` and
+`training/train_autoencoder.py:53-58`. This is the canonical
 feature-order contract; if it drifts, model predictions silently
 return nonsense.
 
-### Loading XGBoost, `loader.py:81-118`
+### Loading XGBoost, `loader.py:80-117`
 
 ```python
 uri = f"models:/{settings.model_xgboost_name}@{settings.model_champion_alias}"
@@ -160,18 +162,18 @@ self._xgb_model = mlflow.xgboost.load_model(uri)
 
 Then three more things happen:
 
-1. **Resolve the alias to a version** (`loader.py:89-92`), so
+1. **Resolve the alias to a version** (`loader.py:88-91`), so
    `/health` and `/models` can report the current version.
-2. **Download the scaler** (`loader.py:96-99`), the pickled
+2. **Download the scaler** (`loader.py:95-98`), the pickled
    `StandardScaler` logged at training time. This is critical: using
    the production scaler, fit on training data only, is how we avoid
    training-serving skew on feature scales.
-3. **Read the optimal threshold** (`loader.py:102-103`),
+3. **Read the optimal threshold** (`loader.py:101-102`),
    `run_data.metrics.get("threshold", 0.5)`. Falls back to 0.5 if
    missing. This is the cost-weighted threshold from
    `find_optimal_threshold`, reused at inference.
 
-### Loading the Autoencoder, `loader.py:120-140`
+### Loading the Autoencoder, `loader.py:119-139`
 
 ```python
 uri = f"models:/{settings.model_autoencoder_name}@{settings.model_challenger_alias}"
@@ -183,65 +185,30 @@ scaler and threshold are bundled inside the model artifacts; see [05
 § AutoencoderPyfunc](05-training.md#the-autoencoderpyfunc-wrapper)).
 No separate artifact download.
 
-### Feature prep: the `amount_zscore` quirk
+### Feature prep: `prepare_features`, `loader.py:145-169`
 
-There are **two** feature-prep methods, and the difference between them
-is the most interesting subtlety in the codebase.
-
-#### Single-row: `prepare_features`, `loader.py:146-170`
-
-```python
-amount_zscore = 0.0  # single-row; std = 0 → matches pipeline behaviour
-```
-
-On a 1-row DataFrame, `Amount.std() == 0` and the training pipeline's
-formula `(Amount - mean) / std` divides by zero. The training
-pipeline handles this with `if sigma > 0 else 0.0`
-(`feature_engineering.py:44`). The serving path short-circuits the
-same way by just hardcoding `0.0`.
-
-**Why this isn't ideal** (but is acceptable at this scale):
-
-- At training time `amount_zscore` was computed against the *training
-  batch's* mean and stdev. That specific mean and stdev weren't saved.
-- A correct fix would log `Amount.mean()` and `Amount.std()` as
-  training-time metrics, pass them into the serving container, and
-  apply them to every single-row request. Then each single row gets a
-  meaningful Z-score against the training distribution.
-- Alternatively, the `StandardScaler` already captures per-feature
-  scale (including `amount_zscore`'s training-time variance). That
-  means the XGBoost model is fed a scaled version of `0.0` for this
-  feature, which works because XGBoost is tree-based and robust to a
-  single feature being constant across rows. But the feature
-  effectively contributes no signal on single-row inference.
-- The autoencoder is more sensitive, a constant feature biases
-  reconstruction error slightly, but in practice the error is small.
-
-This is flagged in [10, Limitations](10-limitations-and-extensions.md):
-the trade-off is known, explained, and has a clear fix.
-
-#### Batch: `prepare_features_batch`, `loader.py:172-194`
+One method converts a validated `TransactionFeatures` into the
+model-ready 32-column DataFrame, replicating the training-time
+transforms exactly:
 
 ```python
-df["amount_log"] = np.log1p(df["Amount"])
-mu = df["Amount"].mean()
-sigma = df["Amount"].std(ddof=0)
-df["amount_zscore"] = (df["Amount"] - mu) / sigma if sigma > 0 else 0.0
+amount_log = float(np.log1p(raw["Amount"]))
+hour_of_day = int(raw["Time"] // 3600 % 24)
+is_night = float(hour_of_day >= 22 or hour_of_day < 6)
+v1_v2_interaction = raw["V1"] * raw["V2"]
 ```
 
-On a batch, the mean and stdev *are* meaningful (they're computed over
-the batch's `Amount` column). This is closer to the training behaviour
-but still wrong: the Z-score is against the batch distribution, not
-the training distribution. For a 1000-row batch this is usually close
-enough; for a single-row batch it falls back to 0.
+Every transform here is **row-local** — it depends only on the values
+in this one transaction, so a single-row request and a training batch
+produce identical features for identical inputs. That property is
+deliberate: an earlier `amount_zscore` feature was batch-dependent
+(standardised against whatever rows happened to be processed together)
+and could not be reproduced for a single-row request, so it was
+removed from the feature set entirely. The batch endpoint simply calls
+`prepare_features` once per transaction; with only row-local features
+there is nothing a batch-level prep could do differently.
 
-(Notice `prepare_features_batch` actually exists but `predict_batch`
-in `routes/predict.py:134` calls `prepare_features` per-row, not
-`prepare_features_batch`. That's a minor inconsistency, the batch
-endpoint treats each row independently, so every `amount_zscore` in
-the batch comes out 0.0. Worth knowing.)
-
-### `predict_xgb`, `loader.py:200-205`
+### `predict_xgb`, `loader.py:172-177`
 
 ```python
 X_scaled = self._xgb_scaler.transform(df.values)
@@ -249,11 +216,11 @@ proba = float(self._xgb_model.predict_proba(X_scaled)[0, 1])
 return proba, proba >= self._xgb_threshold
 ```
 
-Scales the 33-feature row using the fitted training scaler, predicts
+Scales the 32-feature row using the fitted training scaler, predicts
 the positive-class probability, and applies the cost-weighted
 threshold to produce `is_fraud`.
 
-### `predict_ae`, `loader.py:207-212`
+### `predict_ae`, `loader.py:179-184`
 
 ```python
 result = self._ae_model.predict(df)
@@ -472,11 +439,6 @@ models.
 - **SHAP on every XGBoost request adds ~40-80ms.** Already in the
   histogram buckets. The `explanation` field could be made opt-in via
   a query parameter for latency-sensitive callers.
-- **`amount_zscore = 0.0` on single-row requests.** Documented
-  limitation; see above.
-- **Batch endpoint doesn't use `prepare_features_batch`.** Each row
-  goes through `prepare_features` independently, so every
-  `amount_zscore` in a batch comes out 0. Low-priority cleanup.
 - **No graceful model reload.** Promoting a new champion in MLflow
   doesn't propagate to a running serving container, you have to
   restart it. A real production system would poll the registry or

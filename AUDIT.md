@@ -6,18 +6,28 @@ of both unit test suites (14 serving + 7 training, all passing). The original au
 run the full Docker stack; the H1 fix work later did (live DAG runs, serving predictions),
 which surfaced one additional issue (MLflow artifact misconfiguration, documented under H1).
 
-## Status (updated 2026-06-10)
+## Status (updated 2026-06-11)
 
 | Finding | State |
 |---|---|
 | H1 retrain DAG cannot run | **FIXED** (training mount + deps, py3.11 image; verified end-to-end twice) |
 | H2 dead promotion gate | **FIXED** (register-only training, shared `promote_champion_if_better` gate) |
 | H3 broken fraud-rate alert | **FIXED** (`sum()` wrappers, promtool-validated) |
+| M1 leaky/dead `amount_zscore` | **FIXED** (feature dropped everywhere; both models retrained on 32 features) |
+| M2 `scale_pos_weight` no-op | **FIXED** (SMOTE is the single imbalance strategy; param deleted) |
+| M3 threshold tuned and evaluated on same split | **FIXED** (60/20/20 split: tune on val, report on test) |
+| M4 `Time` default flips `is_night` | **FIXED** (`Time` is now required; missing field returns 422) |
+| M5 dead `prepare_features_batch` | **FIXED** (deleted; all serving features are row-local) |
+| M6 venv baked into serving image | **FIXED** (`serving/.dockerignore`; image 12.1 -> 9.9 GB, context 647 bytes) |
+| M7 CI contradicts docs | **FIXED** (typecheck blocking, training tests in CI) |
 | M8 phantom-phase template leftovers | **FIXED** (stubs and Kafka compose blocks deleted) |
 | M9 broken README quickstart | **FIXED** (correct Airflow creds, serving restart step) |
+| L1 autoencoder dims doc mismatch | **FIXED** (correct value is now 32 after M1; docstring/plan.md updated) |
+| L4 `use_label_encoder` no-op param | **FIXED** (deleted) |
+| L6 drift generator's `is_night` definition | **FIXED** (matches canonical 22:00-06:00 definition) |
 | Bonus: MLflow artifacts written client-side | **FIXED** (proxied `mlflow-artifacts:/` scheme; see H1 resolution) |
-| M1-M7 | open |
-| L1-L11 | open |
+| Bonus: pyfunc artifact paths break cross-OS | **FIXED** (see M1 resolution: `load_context` normalises separators) |
+| L2, L3, L5, L7-L11 | open |
 
 **Overall verdict:** the architecture is genuinely sound and matches industry practice.
 The scope decisions (no Kafka, no Kubernetes, Evidently as a script) are well-reasoned and
@@ -149,7 +159,25 @@ sum(rate(inference_total{prediction="fraud"}[5m]))
 
 ## MEDIUM severity
 
-### M1. `amount_zscore` is leaky in training and dead weight in serving
+### M1. `amount_zscore` is leaky in training and dead weight in serving — FIXED 2026-06-11
+
+> **Resolution (drop the feature):** removed from `feature_engineering.py`, both training
+> scripts' `FEATURE_COLS`, the serving loader, both DAGs' expected-column lists, the drift
+> generator, and all docs. Model input width went 33 -> 32, so both models were retrained
+> (XGBoost v5/v6, autoencoder v4) and the data_ingestion DAG re-run to regenerate
+> `features.parquet`. Because the old champion's metrics were measured under the old
+> methodology (see M3) and the feature schema changed, the champion was moved with a
+> one-time `scripts/promote_model.py --force` (new flag, documented for exactly this
+> migration case); subsequent retrains go through the normal gate, verified live (the
+> retrain DAG trained v6 in-container with metrics identical to the host run and the gate
+> promoted it).
+>
+> **Discovered while retraining (and fixed):** two latent Windows bugs. (1) MLflow 2.9
+> records the pyfunc artifact map with `os.path.join`, so a model logged from Windows
+> hands the Linux serving container paths like `artifacts\model.pt` — the autoencoder's
+> `load_context` now normalises separators (the old challenger only loaded because its
+> volume artifacts had been hand-patched). (2) The `→` in `model_registry`'s prints
+> crashed `print()` on cp1252 consoles; replaced with ASCII `->`.
 
 In training data, `amount_zscore` is computed by `compute_interaction_features` over the
 **entire dataset** before the train/val split (mild data leakage: validation rows
@@ -164,7 +192,14 @@ documents this as a "quirk," but the defensible engineering answer is to fix it:
 - **Alternative:** freeze training-set mean/std as model artifacts (like the scaler) and
   apply them at serving.
 
-### M2. `scale_pos_weight` is a silent no-op, and SMOTE + class weighting double-counts
+### M2. `scale_pos_weight` is a silent no-op, and SMOTE + class weighting double-counts — FIXED 2026-06-11
+
+> **Resolution (SMOTE only):** the `scale_pos_weight` computation and parameter were
+> deleted from `train()`, with a comment stating the single-strategy rationale; the
+> no-op `use_label_encoder=False` went with it (L4). The wrong "about 580" claim in
+> `docs/explanation/02-ml-concepts.md` is gone — the wiki, README, plan.md, glossary,
+> and EDA notebook now all describe SMOTE as the one rebalancing strategy and explain
+> why class weighting is deliberately absent.
 
 `train_xgboost.py:train()` computes `scale_pos_weight = n_neg / n_pos` on the **already
 SMOTE-resampled** data, where classes are balanced 1:1 — so it is ≈ 1.0 and does nothing.
@@ -178,7 +213,15 @@ the imbalance anyway. Pick one strategy and make the code say so:
 
 This is a classic interview probe ("why both?") — currently the code has no good answer.
 
-### M3. Threshold is tuned and evaluated on the same validation set
+### M3. Threshold is tuned and evaluated on the same validation set — FIXED 2026-06-11
+
+> **Resolution (three-way split):** both training scripts now split 60/20/20 (stratified;
+> test split off first). The threshold (and the autoencoder's p99 score denominator) is
+> tuned on val; all logged metrics — including the `pr_auc` the promotion gate compares —
+> come from the untouched test split. Honest test metrics after retraining: XGBoost
+> AUC-ROC 0.9797 (target > 0.95 still holds), PR-AUC 0.8547, F1 0.8526; autoencoder
+> PR-AUC 0.2668 (in line with all previous versions — the ~0.74 figure only ever existed
+> in test mocks).
 
 Both training scripts call `find_optimal_threshold(y_val, …)` and then report
 `compute_metrics(y_val, …, threshold=…)` on the **same** split. The reported F1/precision/
@@ -187,7 +230,12 @@ their thresholds were tuned on. Standard fix: three-way split (train / val for t
 tuning / held-out test for reported metrics), or tune the threshold via cross-validation
 on the training set.
 
-### M4. `Time` default silently flips `is_night` on, contradicting the schema docs
+### M4. `Time` default silently flips `is_night` on, contradicting the schema docs — FIXED 2026-06-11
+
+> **Resolution (make `Time` required):** the `= 0.0` default was removed from
+> `TransactionFeatures`; a request without `Time` now returns 422 (verified live). All
+> existing examples, tests, and demo scripts already sent `Time`, so nothing else broke.
+> Docstring and wiki updated with the rationale (a fraud system always has a timestamp).
 
 `serving/app/schemas.py` documents: "when omitted hour_of_day defaults to 0 and is_night
 to False". But hour 0 satisfies `hour_of_day < 6`, so `prepare_features` sets
@@ -195,7 +243,12 @@ to False". But hour 0 satisfies `hour_of_day < 6`, so `prepare_features` sets
 flag — a silent feature distortion. Fix: either make `Time` required (cleanest for a
 fraud model) or fix the docstring and accept the semantics deliberately.
 
-### M5. `prepare_features_batch` is dead code with divergent semantics
+### M5. `prepare_features_batch` is dead code with divergent semantics — FIXED 2026-06-11
+
+> **Resolution (delete):** removed from the loader and the test conftest. With
+> `amount_zscore` gone (M1) every serving feature is row-local, so a batch-level prep
+> could not behave differently from per-row prep even in principle; the wiki now states
+> that property explicitly.
 
 `POST /predict/batch` loops and calls the single-row `prepare_features` per transaction;
 `prepare_features_batch` (which computes `amount_zscore` over the request batch) is never
@@ -203,13 +256,27 @@ called by any route. If it were used, the same transaction would get different s
 depending on what else was in the batch. Delete it (or wire it in deliberately after
 resolving M1). Dead code with a subtle behavioral difference is a red flag in review.
 
-### M6. `serving/Dockerfile` copies the multi-GB venv into the image
+### M6. `serving/Dockerfile` copies the multi-GB venv into the image — FIXED 2026-06-11
+
+> **Resolution:** added `serving/.dockerignore` excluding `.venv`, `tests`, tool caches,
+> and the Dockerfile itself. Verified by rebuilding: build context went from gigabytes
+> (minutes to transfer) to 647 bytes, and the image shrank 12.1 GB -> 9.88 GB (what
+> remains is the pip-installed runtime — torch, mlflow, shap — which serving legitimately
+> needs). Container recreated and verified healthy with both models loaded.
 
 `COPY . /app/serving/` with no `.dockerignore` means `serving/.venv/` (torch ≈ several GB
 on disk) and `serving/tests/` are sent as build context and baked into the image. Add a
 `serving/.dockerignore` with at least `.venv`, `tests`, `__pycache__`.
 
-### M7. CI contradicts the project's own documentation
+### M7. CI contradicts the project's own documentation — FIXED 2026-06-11
+
+> **Resolution:** `continue-on-error: true` removed from the typecheck job — safe because
+> the GitHub Actions history shows the job succeeding on every recorded run (the escape
+> hatch was masking nothing), and mypy is green locally on both packages. The test job now
+> runs `training/tests/` before the serving suite: the only dependency not already pulled
+> in by `serving/requirements.txt` was matplotlib (one extra pinned pip install), so the
+> old "needs the ~1.5 GB training venv" justification did not hold. Wiki 08 rewritten to
+> match; the "typecheck is non-gating" limitation removed from wiki 10.
 
 - `CLAUDE.md` says "mypy is enforced in CI", but `.github/workflows/ci.yml` sets
   `continue-on-error: true` on the typecheck job — it can never fail the build.
@@ -266,24 +333,24 @@ The plan's own acceptance criterion is "README quickstart works for a fresh clon
 
 ## LOW severity
 
-- **L1.** `train_autoencoder.py` docstring says `Input(33)`, while `plan.md` and
-  `CLAUDE.md` say `Input(30) → 64 → …`. 33 is correct (28 V + 5 engineered); update the
-  plan/CLAUDE text.
+- **L1.** ~~`train_autoencoder.py` docstring says `Input(33)`, while `plan.md` and
+  `CLAUDE.md` say `Input(30) → 64 → …`.~~ FIXED with M1: the correct value is now 32
+  (28 V + 4 engineered); docstring, plan.md, and wiki all agree.
 - **L2.** `retrain_dag.validate_features` reads the parquet with `columns=list(EXPECTED…)`
   and then checks for missing columns — `read_parquet` would already have raised, so the
   check is unreachable. Read without `columns=` or drop the check.
 - **L3.** `serving/requirements.txt` pins everything except `shap>=0.44`, directly under a
   comment explaining why exact pins matter. Pin shap.
-- **L4.** `use_label_encoder=False` in `XGBClassifier` is a removed/no-op parameter in
-  XGBoost 2.x and produces a "Parameters: { use_label_encoder } are not used" warning.
-  Delete it.
+- **L4.** ~~`use_label_encoder=False` in `XGBClassifier` is a removed/no-op parameter in
+  XGBoost 2.x and produces a "Parameters: { use_label_encoder } are not used" warning.~~
+  FIXED with M2 (deleted).
 - **L5.** `predict.py` error counter uses label values `"champion"`/`"challenger"` for
   `model_name`, while latency/total counters use full names like
   `fraud-xgboost-champion`. Inconsistent label scheme makes PromQL joins across the
   metrics awkward. Unify.
-- **L6.** `generate_drift_data.py` recomputes `is_night` as `hour_of_day < 6`, dropping
-  the 22:00–23:00 hours from the training definition. Cosmetic (synthetic data), but it
-  contradicts the canonical feature definition.
+- **L6.** ~~`generate_drift_data.py` recomputes `is_night` as `hour_of_day < 6`, dropping
+  the 22:00–23:00 hours from the training definition.~~ FIXED with M1 (same file edit):
+  now `(hour >= 22) | (hour < 6)`, matching the canonical definition.
 - **L7.** The EDA notebook is committed with no executed outputs (all
   `execution_count: null`), so on GitHub it renders without a single chart. For a
   portfolio, commit it executed — the rendered plots are the point.
@@ -308,8 +375,8 @@ The plan's own acceptance criterion is "README quickstart works for a fresh clon
   only to the training split, autoencoder trained only on legit transactions, threshold
   derived from a PR-curve cost sweep.
 - The fitted scaler and decision threshold are versioned with the model in MLflow and
-  reloaded by serving — that is real training/serving-skew thinking (the `amount_zscore`
-  feature aside).
+  reloaded by serving — that is real training/serving-skew thinking (and since M1, every
+  serving feature is row-local, so there is no remaining skew).
 - Deterministic hash-based A/B routing, correctly implemented and well-tested, including
   a distribution test.
 - Degraded-mode startup (API boots without models, 503s cleanly, health endpoint reports
@@ -327,6 +394,6 @@ The plan's own acceptance criterion is "README quickstart works for a fresh clon
 2. ~~H3 (alert expression) — one-line fix~~ DONE
 3. ~~M8 + M9 (template leftovers + README quickstart) — credibility and first impressions~~ DONE
 4. ~~H1 (retrain DAG runtime) — decide the strategy first (DockerOperator vs mounting)~~ DONE (mount + deps)
-5. M1 + M2 + M4 + M5 (feature/imbalance correctness) — then retrain and update metrics
-6. M3 (proper test split) — retrain once more, report honest metrics
-7. M6, M7, then the LOW list as time allows
+5. ~~M1 + M2 + M4 + M5 (feature/imbalance correctness) — then retrain and update metrics~~ DONE
+6. ~~M3 (proper test split) — retrain once more, report honest metrics~~ DONE (bundled with step 5: one retrain covered both)
+7. ~~M6, M7~~ DONE, then the LOW list as time allows (L1, L4, L6 already fixed alongside step 5)

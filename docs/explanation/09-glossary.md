@@ -75,7 +75,8 @@ concept is explained in depth, if one exists.
 - **ROC curve**, plot of TPR vs FPR at varying thresholds; the reference
   binary-classification plot.
 - **`scale_pos_weight`**, XGBoost parameter that up-weights minority-class
-  errors; here `n_neg / n_pos` ([02](02-ml-concepts.md#class-imbalance)).
+  errors; deliberately *not* used here because SMOTE already balances the
+  training data ([02](02-ml-concepts.md#class-imbalance)).
 - **Scaler (StandardScaler)**, fits per-feature mean and std on training
   data; transforms future data to zero-mean, unit-variance.
 - **SHAP (Shapley Additive exPlanations)**, per-feature contribution
@@ -137,8 +138,9 @@ concept is explained in depth, if one exists.
   `http://mlflow:5000` inside Compose, `http://localhost:5000` from a
   host shell.
 - **Training-serving skew**, a bug where feature transforms differ
-  between training and inference; the `amount_zscore` edge case is a
-  known minor instance ([06](06-serving-api.md#feature-prep-the-amount_zscore-quirk)).
+  between training and inference; the project removed its one known
+  instance (a batch-dependent `amount_zscore` feature) and keeps all
+  serving transforms row-local ([06](06-serving-api.md#feature-prep-prepare_features-loaderpy145-169)).
 
 ## Platform and infra
 

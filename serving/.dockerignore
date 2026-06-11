@@ -1,0 +1,12 @@
+# The Dockerfile does `COPY . /app/serving/` — without this file the whole
+# build context lands in the image, including the local venv (torch alone is
+# multiple GB). Everything the running API needs is app/ + requirements.txt.
+.venv
+**/__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+tests
+Dockerfile
+.dockerignore
+README.md

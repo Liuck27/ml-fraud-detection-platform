@@ -5,10 +5,15 @@ one with additional columns. This makes them trivially testable outside Airflow.
 
 Engineered features added on top of raw V1–V28 + Amount:
     amount_log      — log1p(Amount), reduces right skew
-    amount_zscore   — Z-score normalized Amount
     hour_of_day     — 0–23, derived from Time (seconds since first transaction)
     is_night        — True if hour_of_day in [22, 23, 0–5]
     v1_v2_interaction — V1 * V2 interaction term
+
+A batch-level amount_zscore feature used to exist here but was removed: it was
+computed over whatever rows happened to be in the batch (leaking validation
+rows into training statistics) and could not be reproduced for a single-row
+serving request. amount_log plus the model's StandardScaler carry the same
+signal without the skew.
 """
 
 from __future__ import annotations
@@ -37,11 +42,8 @@ def extract_time_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add `amount_zscore` and `v1_v2_interaction`."""
+    """Add `v1_v2_interaction`."""
     out = df.copy()
-    mu = out["Amount"].mean()
-    sigma = out["Amount"].std(ddof=0)
-    out["amount_zscore"] = (out["Amount"] - mu) / sigma if sigma > 0 else 0.0
     out["v1_v2_interaction"] = out["V1"] * out["V2"]
     return out
 

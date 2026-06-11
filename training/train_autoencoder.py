@@ -4,7 +4,7 @@ Trains exclusively on legitimate (non-fraud) transactions so that fraud shows
 up as high reconstruction error.  Logs to MLflow and registers the model as
 'challenger' in the Model Registry.
 
-Architecture: Input(33) → 64 → 32 → 16 → 32 → 64 → Output(33)
+Architecture: Input(32) → 64 → 32 → 16 → 32 → 64 → Output(32)
 
 Run from the repo root:
     training/.venv/Scripts/python training/train_autoencoder.py   # Windows
@@ -52,7 +52,6 @@ PARQUET_PATH = REPO_ROOT / "data" / "processed" / "features.parquet"
 
 FEATURE_COLS: list[str] = [f"V{i}" for i in range(1, 29)] + [
     "amount_log",
-    "amount_zscore",
     "hour_of_day",
     "is_night",
     "v1_v2_interaction",
@@ -63,7 +62,10 @@ MODEL_NAME = os.getenv("MODEL_AUTOENCODER_NAME", "fraud-autoencoder")
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 
 RANDOM_STATE = 42
+# Three-way split: 60% train / 20% val (threshold tuning) / 20% test (reported
+# metrics). Tuning and reporting on the same split would bias metrics upward.
 TEST_SIZE = 0.2
+VAL_SIZE = 0.25  # fraction of the remaining 80% → 20% of the full dataset
 EPOCHS = 50
 BATCH_SIZE = 256
 LEARNING_RATE = 1e-3
@@ -111,14 +113,21 @@ class AutoencoderPyfunc(mlflow.pyfunc.PythonModel):
     """
 
     def load_context(self, context: mlflow.pyfunc.PythonModelContext) -> None:
+        def artifact(key: str) -> str:
+            # MLflow 2.9 on Windows records the artifact map with os.path.join,
+            # so a model trained on Windows hands a Linux loader paths like
+            # "artifacts\model.pt". The file itself lands at artifacts/model.pt,
+            # only the separator in the string is wrong — normalise it.
+            return context.artifacts[key].replace("\\", "/")
+
         self.model: FraudAutoencoder = torch.jit.load(  # type: ignore[assignment]
-            context.artifacts["model_torchscript"]
+            artifact("model_torchscript")
         )
         self.model.eval()
-        with open(context.artifacts["scaler_pkl"], "rb") as f:
-            self.scaler: StandardScaler = pickle.load(f)
-        with open(context.artifacts["threshold_txt"]) as f:
-            self.threshold = float(f.read().strip())
+        with open(artifact("scaler_pkl"), "rb") as scaler_file:
+            self.scaler: StandardScaler = pickle.load(scaler_file)
+        with open(artifact("threshold_txt")) as threshold_file:
+            self.threshold = float(threshold_file.read().strip())
 
     def predict(
         self,
@@ -201,8 +210,16 @@ def main() -> None:
 
     X, y = load_data()
 
-    X_train_df, X_val_df, y_train, y_val = train_test_split(
+    # Split off the held-out test set first, then carve val out of the rest.
+    X_rest_df, X_test_df, y_rest, y_test = train_test_split(
         X, y, test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE
+    )
+    X_train_df, X_val_df, y_train, y_val = train_test_split(
+        X_rest_df,
+        y_rest,
+        test_size=VAL_SIZE,
+        stratify=y_rest,
+        random_state=RANDOM_STATE,
     )
 
     # Scaler fit on non-fraud training data only — mirrors what the model learns
@@ -214,6 +231,7 @@ def main() -> None:
 
     X_train_legit_scaled = scaler.transform(X_train_legit)
     X_val_scaled = scaler.transform(X_val_df)
+    X_test_scaled = scaler.transform(X_test_df)
 
     input_dim = X_train_legit_scaled.shape[1]
     print(f"Training autoencoder on {len(X_train_legit_scaled):,} legit transactions…")
@@ -221,21 +239,23 @@ def main() -> None:
     with mlflow.start_run() as run:
         model = train_autoencoder(X_train_legit_scaled, input_dim)
 
-        # Evaluate on full validation set (both classes)
-        errors = reconstruction_errors(model, X_val_scaled)
-
         # Normalise errors to [0, 1] for threshold search via PR curve.
         # We divide by the 99th-percentile error on legitimate val samples
         # to get a stable denominator that isn't pulled up by fraud outliers.
-        legit_errors = errors[y_val.values == 0]
+        val_errors = reconstruction_errors(model, X_val_scaled)
+        legit_errors = val_errors[y_val.values == 0]
         p99_legit = float(np.percentile(legit_errors, 99))
-        scores = np.clip(errors / (p99_legit * 2 + 1e-8), 0.0, 1.0)
+        val_scores = np.clip(val_errors / (p99_legit * 2 + 1e-8), 0.0, 1.0)
 
-        threshold_score = find_optimal_threshold(y_val.values, scores)
+        # Threshold tuned on val; reported metrics come from the untouched
+        # test set below (scored with the same frozen val-derived denominator).
+        threshold_score = find_optimal_threshold(y_val.values, val_scores)
         # Convert back to a raw-error threshold for the pyfunc wrapper
         threshold_error = threshold_score * (p99_legit * 2)
 
-        metrics = compute_metrics(y_val.values, scores, threshold=threshold_score)
+        test_errors = reconstruction_errors(model, X_test_scaled)
+        test_scores = np.clip(test_errors / (p99_legit * 2 + 1e-8), 0.0, 1.0)
+        metrics = compute_metrics(y_test.values, test_scores, threshold=threshold_score)
 
         # Log hyperparameters
         mlflow.log_params(
@@ -247,13 +267,16 @@ def main() -> None:
                 "input_dim": input_dim,
                 "threshold_error": round(threshold_error, 6),
                 "test_size": TEST_SIZE,
+                "val_size": VAL_SIZE,
             }
         )
         mlflow.log_metrics(metrics)
 
-        # Log evaluation plots
-        roc_fig = plot_roc_curve(y_val.values, scores, title="Autoencoder ROC Curve")
-        pr_fig = plot_pr_curve(y_val.values, scores, title="Autoencoder PR Curve")
+        # Log evaluation plots (test set — same data the metrics report on)
+        roc_fig = plot_roc_curve(
+            y_test.values, test_scores, title="Autoencoder ROC Curve"
+        )
+        pr_fig = plot_pr_curve(y_test.values, test_scores, title="Autoencoder PR Curve")
         mlflow.log_figure(roc_fig, "roc_curve.png")
         mlflow.log_figure(pr_fig, "pr_curve.png")
         import matplotlib.pyplot as plt
