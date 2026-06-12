@@ -55,10 +55,6 @@ def main() -> None:
     current["Amount"] = (current["Amount"] * 1.35 + amount_shift).clip(lower=0.01)
     if "amount_log" in current.columns:
         current["amount_log"] = np.log1p(current["Amount"])
-    if "amount_zscore" in current.columns:
-        current["amount_zscore"] = (
-            current["Amount"] - current["Amount"].mean()
-        ) / current["Amount"].std()
 
     # V1 shift: correlated with transaction amount in the original PCA space
     current["V1"] = current["V1"] + rng.normal(loc=-0.4, scale=0.3, size=len(current))
@@ -76,7 +72,10 @@ def main() -> None:
             float
         )
     if "is_night" in current.columns:
-        current["is_night"] = current["hour_of_day"] < 6
+        # Same definition as feature_engineering.extract_time_features
+        current["is_night"] = (current["hour_of_day"] >= 22) | (
+            current["hour_of_day"] < 6
+        )
 
     REPORTS_PATH.mkdir(parents=True, exist_ok=True)
     out_path = REPORTS_PATH / "current.parquet"

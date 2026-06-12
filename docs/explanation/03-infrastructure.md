@@ -19,7 +19,7 @@ command is the headline feature:
 - **Mirrors production shape.** Each service is a container with its own
   image, ports, volumes, and restart policy. If you later move to
   Kubernetes or ECS, the unit of work (a container) is already the same.
-- **Obvious wiring.** `docker-compose.yml` is a single ~230-line file.
+- **Obvious wiring.** `docker-compose.yml` is a single ~170-line file.
   You can read the whole architecture from it in ten minutes.
 
 What Compose gives up versus something like Kubernetes:
@@ -40,7 +40,7 @@ All services share one bridge network (`fraud-net`) so they can resolve
 each other by service name (`postgres`, `mlflow`, etc). The file is at
 `docker-compose.yml`; line ranges below are stable at time of writing.
 
-### PostgreSQL, `docker-compose.yml:27-48`
+### PostgreSQL, `docker-compose.yml:30-51`
 
 ```yaml
 postgres:
@@ -56,16 +56,16 @@ postgres:
   metadata DB, the MLflow tracking DB, and the project's own `fraud_db`.
   `scripts/init_db.sql` runs once on first start and creates the extra
   databases MLflow/Airflow need.
-- **Healthcheck**, the `pg_isready` loop at lines 41-46 is what every
+- **Healthcheck**, the `pg_isready` loop at lines 44-49 is what every
   other service waits on via `depends_on: condition: service_healthy`.
   Without this, MLflow and Airflow would race Postgres on the first
   `docker compose up` and crash-loop.
-- **Volume `postgres_data`** (declared at line 229), named volume, not a
+- **Volume `postgres_data`** (declared at line 173), named volume, not a
   bind mount, so the data persists across `docker compose down` but gets
   wiped by `docker compose down -v` (that's what `make down-volumes`
   does).
 
-### MLflow, `docker-compose.yml:52-74`
+### MLflow, `docker-compose.yml:55-89`
 
 ```yaml
 mlflow:
@@ -79,33 +79,44 @@ mlflow:
 
 - **Custom image** (`Dockerfile.mlflow`) instead of the stock MLflow image
   so psycopg2 is included, MLflow's Postgres backend needs it.
-- **`--serve-artifacts`** (line 70) makes MLflow the single source of
-  truth for artifact downloads. The serving container doesn't need direct
-  filesystem access to fetch models by URI; it talks HTTP to MLflow. But
-  see the next point, it also has filesystem access, for a reason.
+- **Proxied artifacts.** `--serve-artifacts` plus
+  `--default-artifact-root mlflow-artifacts:/` makes the server the single
+  gateway for artifacts: clients (host training, the retrain DAG, serving)
+  see `mlflow-artifacts:/` URIs and upload/download over HTTP; the server
+  stores the files under `--artifacts-destination` (the
+  `mlflow_artifacts` volume). This matters because the alternative — a
+  local path as `--default-artifact-root` — gets recorded into each
+  experiment and interpreted by every *client* as a path on its own
+  machine, scattering artifacts across hosts (a classic MLflow
+  misconfiguration).
 - **`mlflow_artifacts` volume**, this named volume is shared with the
-  serving container (`docker-compose.yml:181`). See
+  serving container (`docker-compose.yml:132`). See
   [Shared artifacts volume](#shared-artifacts-volume-why) below.
 
-### Airflow, `docker-compose.yml:79-103`
+### Airflow, `docker-compose.yml:94-118`
 
 Three containers built from the same image (`airflow/Dockerfile`) using a
 YAML anchor (`x-airflow-common: &airflow-common` at lines 9-22) to avoid
 repetition:
 
-- **`airflow-init`** (79-83), runs `airflow db migrate` then creates an
+- **`airflow-init`** (87-91), runs `airflow db migrate` then creates an
   admin user. `restart: "no"` because this is a one-shot task; the other
   two wait for it to complete successfully before starting.
-- **`airflow-webserver`** (85-94), UI at `:8080`. Login: `admin` /
-  `admin` (dev only; spelled out in the init command at line 82).
-- **`airflow-scheduler`** (96-103), the process that actually runs DAGs.
+- **`airflow-webserver`** (93-102), UI at `:8080`. Login: `admin` /
+  `admin` (dev only; spelled out in the init command at line 90).
+- **`airflow-scheduler`** (104-111), the process that actually runs DAGs.
   Without it, DAGs appear in the UI but never execute.
 
 DAG and plugin code is bind-mounted from the host (`./airflow/dags`,
 `./airflow/plugins`) so you can edit a DAG on your laptop and see the
-scheduler pick it up without rebuilding the image.
+scheduler pick it up without rebuilding the image. The training code is
+also mounted, read-only, at `/opt/airflow/training` so the retrain DAG
+can run `train_xgboost.py` and import the shared promotion gate; the
+image (`airflow/Dockerfile`) installs the training dependencies (minus
+torch — the DAG only retrains XGBoost), pinned to the same versions as
+`training/requirements.txt`.
 
-### FastAPI serving, `docker-compose.yml:171-188`
+### FastAPI serving, `docker-compose.yml:122-148`
 
 ```yaml
 serving:
@@ -117,17 +128,38 @@ serving:
     - mlflow_artifacts:/app/mlartifacts   # shared with mlflow
   depends_on:
     postgres: { condition: service_healthy }
-    mlflow:   { condition: service_started }
+    mlflow:   { condition: service_healthy }
+  healthcheck:
+    test: ["CMD", "python", "-c", "... status == 'healthy' ..."]
 ```
 
-- **`depends_on` is weak**, `service_started` on MLflow only waits for
-  the container to exist, not for MLflow to be ready to serve requests.
-  The startup code in `serving/app/main.py:24-33` is what actually
-  retries model loads; this is documented on the serving page.
+- **`depends_on` waits for MLflow to be ready, not just started.**
+  MLflow has its own compose healthcheck (a python `urllib` probe of
+  its `/health` endpoint — the image has no curl), and serving uses
+  `condition: service_healthy` on it. That matters because serving
+  loads its models once, at startup: with the old `service_started`
+  condition it could race a still-booting MLflow, fail the load, and
+  sit in degraded mode until someone restarted it.
+- **Serving's own healthcheck checks model state, not just liveness.**
+  `GET /health` always returns 200; the probe parses the JSON and
+  exits nonzero unless `status` is `"healthy"` (both models loaded).
+  So `docker compose ps` tells you whether the API can actually score,
+  which makes `make up` self-verifying. On a fresh clone with no
+  trained models the container reports *unhealthy* — that is accurate,
+  not a bug: train, then restart serving (the README quickstart's
+  order).
 - **Port 8000**, both `/predict` and `/metrics` live on it. Prometheus
   scrapes `serving:8000/metrics` every 15s.
+- **Code is baked into the image, not bind-mounted.** The Dockerfile's
+  `COPY . /app/serving/` means a serving-code change requires
+  `docker compose build serving` — a restart alone keeps running the
+  old code. `serving/.dockerignore` keeps the local `.venv` (several
+  GB, mostly torch), `tests/`, and tool caches out of the build
+  context; without it the venv was being copied into the image on
+  every build, adding ~2 GB of dead weight and making the context
+  transfer take minutes instead of milliseconds.
 
-### Prometheus, `docker-compose.yml:192-205`
+### Prometheus, `docker-compose.yml:152-165`
 
 ```yaml
 prometheus:
@@ -147,7 +179,7 @@ prometheus:
   you want Prometheus data to survive `docker compose down -v`, add a
   `prometheus_data` volume.
 
-### Grafana, `docker-compose.yml:209-221`
+### Grafana, `docker-compose.yml:169-181`
 
 ```yaml
 grafana:
@@ -163,40 +195,34 @@ grafana:
 - **Admin credentials** come from `GF_SECURITY_ADMIN_USER` and
   `GF_SECURITY_ADMIN_PASSWORD` in `.env`.
 
-### Kafka / Zookeeper / producers, `docker-compose.yml:107-168`
-
-Left as commented stubs. See [01, Big picture § Out of scope](01-big-picture.md#whats-deliberately-out-of-scope)
-for why.
-
 ## Shared artifacts volume (why)
 
 Two services mount the same named volume `mlflow_artifacts`:
 
 | Service | Mount | Line |
 |---|---|---|
-| `mlflow` | `mlflow_artifacts:/app/mlartifacts` | `docker-compose.yml:62` |
-| `serving` | `mlflow_artifacts:/app/mlartifacts` | `docker-compose.yml:181` |
+| `mlflow` | `mlflow_artifacts:/app/mlartifacts` | `docker-compose.yml:65` |
+| `serving` | `mlflow_artifacts:/app/mlartifacts` | `docker-compose.yml:132` |
 
-The MLflow server writes model artifacts (the XGBoost booster, the
-autoencoder weights, `scaler.pkl`) to `/app/mlartifacts`. When FastAPI
-starts up and calls `mlflow.pyfunc.load_model("models:/fraud-xgboost@champion")`,
-MLflow's client library resolves that URI to an artifact path, and
-because the path is visible inside the serving container too, the load
-is essentially a local file read, no HTTP copy.
+The MLflow server stores all artifacts (the XGBoost booster, the
+autoencoder weights, `scaler.pkl`) in this volume — it is the server's
+`--artifacts-destination`. Since the move to proxied artifacts (see the
+MLflow section above), models trained after that change carry
+`mlflow-artifacts:/` URIs and serving fetches them **over HTTP through
+the MLflow server** at startup — the volume mount in `serving` is not
+involved for those loads.
 
-This is a slightly unusual choice. The alternative is pulling artifacts
-over HTTP via `--serve-artifacts`, which works but is slower and adds a
-dependency on MLflow being up *healthy* (not just started) at serving
-startup. Sharing the volume keeps startup fast and deterministic.
-
-**Limitation:** the two containers are now coupled by shared filesystem.
-If you ever split them onto different hosts, the serving container has
-to switch to HTTP artifact fetching and you'd drop the
-`volumes: mlflow_artifacts:...` from the `serving` service.
+The mount remains in `serving` for backward compatibility: model
+versions registered *before* the proxy fix have absolute-path artifact
+URIs (`/app/mlartifacts/...`), and for those the path must be visible
+inside the serving container for the load to work. Once every serving
+model has been retrained under the proxied scheme, the mount could be
+dropped from `serving` — which is exactly what you'd do to split the
+two services onto different hosts.
 
 ## The network: `fraud-net`
 
-One bridge network, defined at `docker-compose.yml:223-226`:
+One bridge network, defined at `docker-compose.yml:183-186`:
 
 ```yaml
 networks:
@@ -236,10 +262,13 @@ Every service has its own `requirements.txt` and its own `.venv/`:
   (Celery, Flask, SQLAlchemy versions, etc). Letting it share an env
   with modern PyTorch / XGBoost / FastAPI almost always triggers
   a resolver conflict.
-- **Training vs serving drift.** Training needs `torch`, `xgboost`, and
-  `imblearn` (heavy). Serving only needs `mlflow` client + `xgboost`
-  runtime + `shap` + `fastapi`. Separating them keeps the serving image
-  small and fast to rebuild.
+- **Training vs serving drift.** The split is about isolation and
+  pinning, not image size: serving still ships `torch` (the autoencoder
+  pyfunc runs in-process) and `xgboost`, pinned to the exact training
+  versions. What serving *doesn't* carry is the train-only tooling —
+  `imblearn`, `matplotlib`, `jupyter` — and keeping the requirement
+  files separate means a training-side dependency change can't silently
+  alter inference behaviour.
 - **Evidently is version-sensitive.** Its metric API has changed a lot
   across minor versions; pinning it in its own venv means the training
   venv doesn't have to accommodate an Evidently-compatible pandas
@@ -308,15 +337,16 @@ the dev venv.
 `make check` is the single command you run before pushing: if it
 passes locally, CI will pass.
 
-### Training, `Makefile:148-157`
+### Training, `Makefile:146-161`
 
 | Target | What it does |
 |---|---|
-| `train-xgboost` | Train XGBoost, log to MLflow, promote to `champion` |
+| `train-xgboost` | Train XGBoost, log to MLflow, register a new version (no promotion) |
 | `train-autoencoder` | Train AE, log to MLflow, register as `challenger` |
-| `train` | Run both in sequence |
+| `promote` | Move `champion` to the latest XGBoost version, only if its PR-AUC is at least as good |
+| `train` | Run both trainings, then the gated `promote` |
 
-### Data + monitoring, `Makefile:161-171`
+### Data + monitoring, `Makefile:163-178`
 
 | Target | What it does |
 |---|---|

@@ -18,7 +18,9 @@ class TransactionFeatures(BaseModel):
 
     V1–V28 are PCA-transformed features from the dataset.
     Amount and Time are the original transaction fields.
-    Time is optional: when omitted hour_of_day defaults to 0 and is_night to False.
+    Time is required: hour_of_day and is_night are derived from it, and a
+    silent default would put every timestamp-less transaction at midnight
+    (which counts as night) — a distorted feature the model would trust.
     """
 
     V1: float
@@ -50,7 +52,7 @@ class TransactionFeatures(BaseModel):
     V27: float
     V28: float
     Amount: float
-    Time: float = 0.0
+    Time: float
 
 
 class TransactionRequest(BaseModel):
@@ -79,6 +81,8 @@ class Explanation(BaseModel):
 
 
 class PredictionResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     transaction_id: str
     fraud_probability: float
     is_fraud: bool
@@ -90,6 +94,8 @@ class PredictionResponse(BaseModel):
 
 
 class BatchPredictionItem(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     transaction_id: str
     fraud_probability: float
     is_fraud: bool

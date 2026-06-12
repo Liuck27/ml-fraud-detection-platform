@@ -14,78 +14,68 @@ issue is discussed in context.
 
 ### Critical for production, acceptable at this scale
 
-1. **Training-serving skew on `amount_zscore`.** The single-row
-   serving path uses `amount_zscore = 0.0` because a 1-row batch has
-   `std = 0`. In production you'd log training-time mean/std and
-   apply them to every single-row request. ([06](06-serving-api.md#feature-prep-the-amount_zscore-quirk))
-2. **Random train/val split instead of time-based.** The dataset is
-   chronologically ordered, so a random split leaks future into past.
-   Validation metrics are mildly optimistic. The fix is
+1. **Random train/val/test split instead of time-based.** The dataset
+   is chronologically ordered, so a random split leaks future into
+   past. Reported metrics are mildly optimistic. The fix is
    `TimeSeriesSplit` or a date cutoff, plus revalidating the PR-AUC
-   target. ([05](05-training.md#data-split--train_xgboostpy108-110))
-3. **No authentication on `/predict`.** Anyone on `fraud-net` can
+   target. ([05](05-training.md#data-split-train_xgboostpy112-122))
+2. **No authentication on `/predict`.** Anyone on `fraud-net` can
    score. For production, add API keys or OAuth2 at the FastAPI
    layer, ingress TLS, and rate limiting. ([06](06-serving-api.md#limitations))
-4. **No prediction persistence.** Predictions are counted in
+3. **No prediction persistence.** Predictions are counted in
    Prometheus then discarded. Without a prediction log you can't
    audit decisions, compute true quality offline, or feed a drift
    report automatically. Write each prediction to Postgres (or
    Kafka, S3) with inputs, output, model version, and timestamp.
-5. **Alerts fire but don't route.** No AlertManager, no Slack/email.
+4. **Alerts fire but don't route.** No AlertManager, no Slack/email.
    Fine on a laptop; blind in production. ([07](07-monitoring.md#no-alertmanager))
-6. **`.env` is plain text.** Secrets should come from a secret
+5. **`.env` is plain text.** Secrets should come from a secret
    manager at runtime, not from a file on disk. ([03](03-infrastructure.md#env-and-secrets-hygiene))
 
 ### Significant but manageable
 
-7. **No hyperparameter search.** XGBoost uses a hand-picked config.
+6. **No hyperparameter search.** XGBoost uses a hand-picked config.
    Optuna on `training/.venv` would be a one-afternoon win. ([05](05-training.md#limitations))
-8. **No cross-validation.** A single 80/20 split is noisy when you
-   only have 492 frauds. CV would give more stable PR-AUC. ([05](05-training.md#limitations))
-9. **Single serving instance.** One container, one worker. Any real
+7. **No cross-validation.** A single 60/20/20 split is noisy when you
+   only have 492 frauds (~98 in the test split). CV would give more
+   stable PR-AUC. ([05](05-training.md#limitations))
+8. **Single serving instance.** One container, one worker. Any real
    load or high-availability setup needs gunicorn + multiple
    uvicorn workers, then horizontal scaling. ([06](06-serving-api.md#limitations))
-10. **No graceful model reload.** Promoting a new champion in MLflow
-    doesn't propagate until `docker compose restart serving`.
-    A polling or webhook-based reload would fix this. ([06](06-serving-api.md#limitations))
-11. **Evidently drift is offline and manual.** `make drift-report`
+9. **No graceful model reload.** Promoting a new champion in MLflow
+   doesn't propagate until `docker compose restart serving`.
+   A polling or webhook-based reload would fix this. ([06](06-serving-api.md#limitations))
+10. **Evidently drift is offline and manual.** `make drift-report`
     when you remember; no ingestion pipeline for serving data; no
     trend across reports. Wire prediction logs, daily report,
     alert. ([07](07-monitoring.md#what-current-data-means-here))
-12. **Static alert thresholds.** 10% fraud rate, 500ms p99, 0.1 err/s,
+11. **Static alert thresholds.** 10% fraud rate, 500ms p99, 0.1 err/s,
     hand-picked. A real system would learn or compare against
     last-week-same-time. ([07](07-monitoring.md#limitations))
-13. **Retrain DAG only retrains XGBoost.** The autoencoder is
+12. **Retrain DAG only retrains XGBoost.** The autoencoder is
     trained manually and not on a schedule. Adding a second branch
     in the DAG is straightforward. ([04](04-data-and-features.md#the-retrain-dag))
-14. **Retrain promotion uses a single-number gate.** `new_pr_auc >=
+13. **Retrain promotion uses a single-number gate.** `new_pr_auc >=
     champion_pr_auc` can promote on noise. Bootstrapped CI, or a
     shadow-traffic eval, would be more robust.
-15. **Typecheck job is non-gating.** `continue-on-error: true` on
-    mypy. Fine while type coverage is mixed; should flip to `false`
-    once stable. ([08](08-testing-and-ci.md#job-2--typecheck-ciyml35-63))
-
 ### Minor but worth knowing
 
-16. **Batch endpoint doesn't use `prepare_features_batch`.** Each
-    row goes through `prepare_features` independently, so
-    `amount_zscore` is always 0 in batches. Low-impact. ([06](06-serving-api.md#batch-prepare_features_batch--loaderpy172-194))
-17. **`amount_log` is redundant for XGBoost.** Tree models are
+14. **`amount_log` is redundant for XGBoost.** Tree models are
     invariant to monotonic transforms. Kept because it helps the
     autoencoder and SHAP readability.
-18. **SHAP adds ~40-80ms per request.** Reasonable, but could be
+15. **SHAP adds ~40-80ms per request.** Reasonable, but could be
     opt-in via a query parameter.
-19. **Autoencoder threshold isn't stored in the registry run metrics
+16. **Autoencoder threshold isn't stored in the registry run metrics
     the same way XGBoost's is.** It lives inside the pyfunc's
     `threshold.txt` artifact instead. Not a bug, just asymmetry.
-20. **Cardinality risk on Prometheus labels.** If you ever add a
+17. **Cardinality risk on Prometheus labels.** If you ever add a
     label with unbounded values (like `transaction_id`), Prometheus
     dies quickly. ([07](07-monitoring.md#cardinality-risk))
-21. **No coverage floor in CI.** Coverage is reported but not
+18. **No coverage floor in CI.** Coverage is reported but not
     enforced. `--cov-fail-under=80` would gate it. ([08](08-testing-and-ci.md#limitations))
-22. **No security scanner in CI.** `make audit` exists; wiring to CI
+19. **No security scanner in CI.** `make audit` exists; wiring to CI
     would catch CVEs on push.
-23. **No performance regression tests.** A 100ms regression wouldn't
+20. **No performance regression tests.** A 100ms regression wouldn't
     fail CI. `pytest-benchmark` on hot paths would surface them.
 
 ## What you'd change first in a real system
@@ -96,20 +86,18 @@ order:
 1. **Add a prediction log.** Everything else (drift pipelines, offline
    quality, audit) depends on having this data. Postgres table or
    Kafka topic.
-2. **Fix `amount_zscore` training-serving skew.** Log training-time
-   mean/std; use them at inference.
-3. **Add auth + rate limiting on `/predict`.** API keys minimum;
+2. **Add auth + rate limiting on `/predict`.** API keys minimum;
    OAuth2 / mTLS for real.
-4. **Time-based train/val split.** Retrain and re-baseline the
+3. **Time-based train/val/test split.** Retrain and re-baseline the
    PR-AUC target. Everything upstream of this is optimistic until
    done.
-5. **AlertManager + Slack routing.** Alerts that fire but don't page
+4. **AlertManager + Slack routing.** Alerts that fire but don't page
    anyone are theatre.
-6. **Gunicorn + multiple Uvicorn workers.** Instant latency and
+5. **Gunicorn + multiple Uvicorn workers.** Instant latency and
    throughput win; lays groundwork for horizontal scaling.
-7. **Graceful model reload.** Polling `models:/name@alias` every 60s
+6. **Graceful model reload.** Polling `models:/name@alias` every 60s
    and switching on version change.
-8. **Shadow-traffic evaluation before promotion.** Route 100% to
+7. **Shadow-traffic evaluation before promotion.** Route 100% to
    champion in production but score on challenger for N days and
    compare offline before moving the alias.
 
@@ -118,16 +106,14 @@ order:
 Directions the project could grow in next:
 
 - **Kafka streaming ingress.** Turn the static batch pipeline into a
-  streaming pipeline with a Kafka producer and a Go consumer. The
-  commented stubs at `docker-compose.yml:107-168` are the starting
-  point.
+  streaming pipeline with a Kafka producer and a Go consumer.
 - **Feast feature store.** Eliminate training-serving feature skew and
   serve online features with sub-millisecond reads.
 - **Deploy to a cloud.** ECS, GKE, or Cloud Run. Takes the stack from
   compose to managed infra.
 - **Hyperparameter sweep with Optuna.** Integrated with MLflow nested
   runs, targeting PR-AUC.
-- **Time-aware cross-validation.** Replace the random 80/20 split
+- **Time-aware cross-validation.** Replace the random 60/20/20 split
   with a `TimeSeriesSplit`; the honest PR-AUC is lower but no longer
   optimistic.
 - **LLM-assisted fraud reasoning.** A `POST /predict/explain`

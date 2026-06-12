@@ -2,7 +2,12 @@
 
 Reads features.parquet produced by the Airflow data ingestion DAG,
 trains an XGBoost classifier with SMOTE oversampling, logs everything
-to MLflow, and registers the model as 'champion' in the Model Registry.
+to MLflow, and registers a new model version in the Model Registry.
+
+Training does NOT touch the 'champion' alias: promotion is a separate,
+gated step (only if PR-AUC improves on the current champion) — run
+`make promote` / scripts/promote_model.py, or the retrain DAG's
+evaluate_and_promote task. scripts/run_training.sh does this for you.
 
 Run from the repo root:
     training/.venv/Scripts/python training/train_xgboost.py   # Windows
@@ -39,7 +44,7 @@ from evaluate import (
     plot_pr_curve,
     plot_roc_curve,
 )
-from model_registry import promote_to_champion
+from model_registry import get_latest_version
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -48,12 +53,11 @@ from model_registry import promote_to_champion
 REPO_ROOT = Path(__file__).parent.parent
 PARQUET_PATH = REPO_ROOT / "data" / "processed" / "features.parquet"
 
-# V1–V28 (original PCA features) + 5 engineered features.
-# Raw Amount and Time are excluded: amount is encoded by amount_log/amount_zscore;
+# V1–V28 (original PCA features) + 4 engineered features.
+# Raw Amount and Time are excluded: amount is encoded by amount_log;
 # Time is encoded by hour_of_day/is_night.
 FEATURE_COLS: list[str] = [f"V{i}" for i in range(1, 29)] + [
     "amount_log",
-    "amount_zscore",
     "hour_of_day",
     "is_night",
     "v1_v2_interaction",
@@ -64,7 +68,10 @@ MODEL_NAME = os.getenv("MODEL_XGBOOST_NAME", "fraud-xgboost")
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 
 RANDOM_STATE = 42
+# Three-way split: 60% train / 20% val (threshold tuning) / 20% test (reported
+# metrics). Tuning and reporting on the same split would bias metrics upward.
 TEST_SIZE = 0.2
+VAL_SIZE = 0.25  # fraction of the remaining 80% → 20% of the full dataset
 
 
 def load_data() -> tuple[pd.DataFrame, pd.Series]:
@@ -81,17 +88,14 @@ def load_data() -> tuple[pd.DataFrame, pd.Series]:
 
 
 def train(X_train: np.ndarray, y_train: np.ndarray) -> XGBClassifier:
-    n_neg = int((y_train == 0).sum())
-    n_pos = int((y_train == 1).sum())
-    scale_pos_weight = n_neg / n_pos  # belt-and-suspenders alongside SMOTE
-
+    # SMOTE is the single imbalance strategy: the training data arriving here is
+    # already resampled to 1:1, so class weighting (scale_pos_weight) would have
+    # nothing to correct — and applied before SMOTE it would double-correct.
     model = XGBClassifier(
         n_estimators=300,
         max_depth=6,
         learning_rate=0.05,
-        scale_pos_weight=scale_pos_weight,
         eval_metric="aucpr",
-        use_label_encoder=False,
         random_state=RANDOM_STATE,
         n_jobs=-1,
     )
@@ -105,14 +109,23 @@ def main() -> None:
 
     X, y = load_data()
 
-    X_train_df, X_val_df, y_train, y_val = train_test_split(
+    # Split off the held-out test set first, then carve val out of the rest.
+    X_rest_df, X_test_df, y_rest, y_test = train_test_split(
         X, y, test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE
+    )
+    X_train_df, X_val_df, y_train, y_val = train_test_split(
+        X_rest_df,
+        y_rest,
+        test_size=VAL_SIZE,
+        stratify=y_rest,
+        random_state=RANDOM_STATE,
     )
 
     # Scale features — fit only on training data
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train_df)
     X_val_scaled = scaler.transform(X_val_df)
+    X_test_scaled = scaler.transform(X_test_df)
 
     # SMOTE oversampling on training set only
     smote = SMOTE(random_state=RANDOM_STATE)
@@ -125,9 +138,14 @@ def main() -> None:
     with mlflow.start_run() as run:
         model = train(X_train_resampled, y_train_resampled)
 
-        y_pred_proba = model.predict_proba(X_val_scaled)[:, 1]
-        threshold = find_optimal_threshold(y_val.values, y_pred_proba)
-        metrics = compute_metrics(y_val.values, y_pred_proba, threshold=threshold)
+        # Tune the decision threshold on val, then report metrics on the
+        # untouched test set — the logged numbers (and the promotion gate that
+        # compares pr_auc) are free of threshold-tuning bias.
+        y_val_proba = model.predict_proba(X_val_scaled)[:, 1]
+        threshold = find_optimal_threshold(y_val.values, y_val_proba)
+
+        y_test_proba = model.predict_proba(X_test_scaled)[:, 1]
+        metrics = compute_metrics(y_test.values, y_test_proba, threshold=threshold)
 
         # Log hyperparameters
         mlflow.log_params(
@@ -137,14 +155,15 @@ def main() -> None:
                 "learning_rate": 0.05,
                 "smote": True,
                 "test_size": TEST_SIZE,
+                "val_size": VAL_SIZE,
                 "n_features": len(FEATURE_COLS),
             }
         )
         mlflow.log_metrics(metrics)
 
-        # Log evaluation plots
-        roc_fig = plot_roc_curve(y_val.values, y_pred_proba, title="XGBoost ROC Curve")
-        pr_fig = plot_pr_curve(y_val.values, y_pred_proba, title="XGBoost PR Curve")
+        # Log evaluation plots (test set — same data the metrics report on)
+        roc_fig = plot_roc_curve(y_test.values, y_test_proba, title="XGBoost ROC Curve")
+        pr_fig = plot_pr_curve(y_test.values, y_test_proba, title="XGBoost PR Curve")
         mlflow.log_figure(roc_fig, "roc_curve.png")
         mlflow.log_figure(pr_fig, "pr_curve.png")
         import matplotlib.pyplot as plt
@@ -178,13 +197,15 @@ def main() -> None:
         if metrics["auc_roc"] < 0.95:
             print(f"WARNING: AUC-ROC {metrics['auc_roc']:.4f} is below target 0.95")
 
-    # Promote the newly registered version to champion
-    from mlflow.tracking import MlflowClient
-
-    client = MlflowClient()
-    versions = client.search_model_versions(f"name='{MODEL_NAME}'")
-    latest = max(versions, key=lambda v: int(v.version))
-    promote_to_champion(MODEL_NAME, latest.version)
+    # Registration only — the 'champion' alias is NOT moved here. Promotion is
+    # a gated release decision (new PR-AUC must beat the current champion's),
+    # applied by `make promote` or the retrain DAG. This separation means a bad
+    # training run can never silently replace the serving model.
+    version = get_latest_version(MODEL_NAME)
+    print(
+        f"Registered {MODEL_NAME} v{version}. "
+        "Run `make promote` (or the retrain DAG) to apply the gated champion promotion."
+    )
 
 
 if __name__ == "__main__":

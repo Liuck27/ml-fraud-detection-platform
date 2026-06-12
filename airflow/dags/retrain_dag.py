@@ -1,11 +1,21 @@
-"""Automated model retraining DAG.
+"""Model retraining DAG with a gated champion promotion.
 
-Triggered manually from the Airflow UI or on a weekly schedule.
 Chain: validate features → train XGBoost → promote to champion if PR-AUC improved.
+
+Triggered manually from the Airflow UI (schedule=None). This is a demo stack
+that isn't continuously running, so a cron schedule would only produce failed
+runs between sessions; in production you would set e.g. schedule="@weekly",
+a realistic cadence for fraud model refreshes.
+
+The training script itself only registers a new model version — it never moves
+the 'champion' alias. The evaluate_and_promote task here is the single quality
+gate deciding whether the new version reaches production.
 
 Prerequisites:
   - data/processed/features.parquet must exist (run data_ingestion DAG first)
   - MLflow tracking server must be reachable (mlflow:5000 inside Docker Compose)
+  - ./training is volume-mounted at /opt/airflow/training (docker-compose.yml)
+    and the Airflow image includes the training deps (see airflow/Dockerfile)
 
 Production note: the train_xgboost task calls the training script via subprocess.
 In a production deployment you would replace this with a DockerOperator or
@@ -34,7 +44,6 @@ EXPECTED_FEATURE_COLS = {f"V{i}" for i in range(1, 29)} | {
     "Amount",
     "Class",
     "amount_log",
-    "amount_zscore",
     "hour_of_day",
     "is_night",
     "v1_v2_interaction",
@@ -44,6 +53,7 @@ EXPECTED_FEATURE_COLS = {f"V{i}" for i in range(1, 29)} | {
 def validate_features(**_: object) -> None:
     """Check that features.parquet exists and has the expected schema."""
     import pandas as pd
+    import pyarrow.parquet as pq
 
     if not FEATURES_PATH.exists():
         raise FileNotFoundError(
@@ -51,11 +61,14 @@ def validate_features(**_: object) -> None:
             "Run the data_ingestion DAG first, or `make download-data` on the host."
         )
 
-    df = pd.read_parquet(FEATURES_PATH, columns=list(EXPECTED_FEATURE_COLS))
-    missing = EXPECTED_FEATURE_COLS - set(df.columns)
+    # Check the file's schema directly: passing columns= to read_parquet would
+    # raise its own error on a missing column before this check could run.
+    present = set(pq.read_schema(FEATURES_PATH).names)
+    missing = EXPECTED_FEATURE_COLS - present
     if missing:
         raise ValueError(f"Missing expected columns in features.parquet: {missing}")
 
+    df = pd.read_parquet(FEATURES_PATH, columns=["Class"])
     fraud_count = int(df["Class"].sum())
     print(
         f"Validation passed: {len(df):,} rows, {fraud_count} frauds "
@@ -81,70 +94,46 @@ def train_xgboost(**_: object) -> None:
         [sys.executable, str(script)],
         env=env,
         cwd=str(TRAINING_DIR.parent),
-        check=True,
+        capture_output=True,
+        text=True,
     )
-    print(f"Training completed (return code {result.returncode})")
+    # Echo the script's output: a subprocess writes to its own stdout/stderr,
+    # which bypasses Airflow's task log capture — without this, a training
+    # failure would show only "exit status 1" with no traceback.
+    print(result.stdout)
+    if result.stderr:
+        print("--- training stderr ---")
+        print(result.stderr)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"train_xgboost.py failed with exit code {result.returncode}"
+        )
+    print("Training completed")
 
 
 def evaluate_and_promote(**_: object) -> None:
-    """Compare the latest registered model vs. the current champion.
+    """Apply the gated champion promotion to the version just registered.
 
-    Promotes the new version to 'champion' alias only if its PR-AUC is at
-    least as good as the existing champion's. Falls back to unconditional
-    promotion when no champion alias exists yet.
+    Delegates to training/model_registry.promote_champion_if_better — the
+    exact same quality gate that `make promote` applies after host-side
+    training: the latest version becomes 'champion' only if its PR-AUC is at
+    least as good as the current champion's, falling back to unconditional
+    promotion when no champion exists yet (the first ever training run).
     """
     import mlflow
-    from mlflow.tracking import MlflowClient
+
+    sys.path.insert(0, str(TRAINING_DIR))
+    from model_registry import promote_champion_if_better
 
     mlflow.set_tracking_uri(MLFLOW_URI)
-    client = MlflowClient()
-
-    # Retrieve the version just registered by the training script.
-    versions = client.search_model_versions(f"name='{XGB_MODEL_NAME}'")
-    if not versions:
-        raise ValueError(
-            f"No versions found for model '{XGB_MODEL_NAME}' in MLflow registry."
-        )
-
-    latest = max(versions, key=lambda v: int(v.version))
-    new_version = latest.version
-    new_run = client.get_run(latest.run_id)
-    new_pr_auc: float = new_run.data.metrics.get("pr_auc", 0.0)
-
-    # Retrieve current champion metrics (if any).
-    try:
-        champ = client.get_model_version_by_alias(XGB_MODEL_NAME, "champion")
-        champ_run = client.get_run(champ.run_id)
-        champ_pr_auc: float = champ_run.data.metrics.get("pr_auc", 0.0)
-        champ_version = champ.version
-    except Exception:
-        champ_pr_auc = 0.0
-        champ_version = "none"
-        print("No existing champion found — will promote unconditionally.")
-
-    print(
-        f"Candidate v{new_version}: PR-AUC={new_pr_auc:.4f} | "
-        f"Champion v{champ_version}: PR-AUC={champ_pr_auc:.4f}"
-    )
-
-    if new_pr_auc >= champ_pr_auc:
-        client.set_registered_model_alias(XGB_MODEL_NAME, "champion", new_version)
-        delta = new_pr_auc - champ_pr_auc
-        print(
-            f"Promoted v{new_version} → champion (+{delta:.4f} PR-AUC vs. previous champion)"
-        )
-    else:
-        print(
-            f"New model (PR-AUC={new_pr_auc:.4f}) did not beat champion "
-            f"(PR-AUC={champ_pr_auc:.4f}) — keeping existing champion."
-        )
+    promote_champion_if_better(XGB_MODEL_NAME)
 
 
 with DAG(
     dag_id="retrain",
     description="Retrain XGBoost classifier; promote to champion if PR-AUC improved",
     start_date=datetime(2024, 1, 1),
-    schedule="@weekly",
+    schedule=None,  # manual trigger only — in production this would be e.g. "@weekly"
     catchup=False,
     tags=["phase-6", "training"],
 ) as dag:

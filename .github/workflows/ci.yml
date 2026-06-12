@@ -24,7 +24,7 @@ jobs:
           key: lint-${{ hashFiles('requirements-dev.txt') }}
 
       - name: Install lint tools
-        run: pip install ruff==0.1.9 black==23.12.1
+        run: pip install ruff==0.1.9 "black[jupyter]==23.12.1"
 
       - name: ruff check
         run: ruff check .
@@ -35,8 +35,6 @@ jobs:
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
-    # Training has partial type coverage; treat failures as warnings for now.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -83,6 +81,13 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
           pip install -r serving/requirements.txt
+          # training/tests/ needs only numpy + scikit-learn (already pulled
+          # in by serving/requirements.txt) plus matplotlib — not the full
+          # training venv. Pin matches training/requirements.txt.
+          pip install matplotlib==3.8.2
+
+      - name: Run training tests
+        run: pytest training/tests/ -v --tb=short
 
       - name: Run serving tests
         # Tests use mocked MLflow — no live services required.

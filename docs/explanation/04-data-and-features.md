@@ -45,8 +45,8 @@ Consequences:
 - **Small enough.** ~150 MB, 284k rows, fits in memory, trains in
   minutes, fast iteration.
 - **Imbalanced enough.** 0.172% positive rate forces you to confront
-  the three class-imbalance countermeasures
-  (SMOTE, `scale_pos_weight`, threshold tuning, see
+  real class-imbalance countermeasures
+  (SMOTE, threshold tuning, see
   [02 § Class imbalance](02-ml-concepts.md#class-imbalance)) rather than
   faking the problem on a balanced dataset.
 
@@ -103,7 +103,7 @@ Parquet files.
 
 ## The `data_ingestion` DAG
 
-File: `airflow/dags/data_ingestion_dag.py` (99 lines).
+File: `airflow/dags/data_ingestion_dag.py` (98 lines).
 
 ```
 validate_csv  >>  engineer_and_write
@@ -134,11 +134,11 @@ Fails loudly if the CSV isn't what we expect:
 - **Fraud count.** Logs the actual positive rate, useful sanity
   check that prints e.g. `284,807 rows, 492 frauds (0.173%)`.
 
-### Task 2, `engineer_and_write` (`data_ingestion_dag.py:54-78`)
+### Task 2, `engineer_and_write` (`data_ingestion_dag.py:54-77`)
 
 Reads the raw CSV, applies `engineer_features()` (below), writes Parquet
 to `data/processed/features.parquet`. The final DataFrame has the
-original 31 columns plus 5 engineered columns (36 total).
+original 31 columns plus 4 engineered columns (35 total).
 
 ### Idempotency
 
@@ -153,7 +153,7 @@ it is safe.
 
 ## Feature engineering
 
-File: `airflow/plugins/feature_engineering.py` (55 lines, pure
+File: `airflow/plugins/feature_engineering.py` (56 lines, pure
 functions).
 
 These functions deliberately live in `airflow/plugins/` rather than
@@ -166,7 +166,7 @@ the serving container recreates the same transforms in
 Each function takes a DataFrame and returns a *new* DataFrame with
 additional columns. No mutation, no I/O, trivial to test.
 
-### `log_transform_amount` → `amount_log` (`feature_engineering.py:20-24`)
+### `log_transform_amount` → `amount_log` (`feature_engineering.py:25-29`)
 
 ```python
 out["amount_log"] = np.log1p(out["Amount"])
@@ -184,7 +184,7 @@ out["amount_log"] = np.log1p(out["Amount"])
   still helps in practice because the autoencoder and SHAP rendering
   benefit from a less skewed scale.
 
-### `extract_time_features` → `hour_of_day`, `is_night` (`feature_engineering.py:27-36`)
+### `extract_time_features` → `hour_of_day`, `is_night` (`feature_engineering.py:32-41`)
 
 ```python
 out["hour_of_day"] = (out["Time"] // 3600 % 24).astype(int)
@@ -203,33 +203,27 @@ out["is_night"] = out["hour_of_day"].apply(lambda h: h >= 22 or h < 6)
   real wall clock. Hour-of-day is an *approximation*. In a production
   system you'd use the transaction's actual timezone-aware timestamp.
 
-### `compute_interaction_features` → `amount_zscore`, `v1_v2_interaction` (`feature_engineering.py:39-46`)
+### `compute_interaction_features` → `v1_v2_interaction` (`feature_engineering.py:44-49`)
 
 ```python
-mu = out["Amount"].mean()
-sigma = out["Amount"].std(ddof=0)
-out["amount_zscore"] = (out["Amount"] - mu) / sigma if sigma > 0 else 0.0
 out["v1_v2_interaction"] = out["V1"] * out["V2"]
 ```
 
-- **`amount_zscore`** standardises `Amount` against the *batch*'s mean
-  and stdev. On the full training batch this produces a sensible Z-score
-  centred at 0.
-  - **Subtle issue**: at serving time a single-row request has mean =
-    the row's own amount, stdev = 0, and the formula short-circuits to
-    `0.0`. The serving loader is aware of this, it either falls back
-    to 0 (single row) or recomputes batch-wise (batch endpoint). See
-    [06, Serving API § Model loader](06-serving-api.md) for the full
-    story. In production you'd use the *training-time* mean and stdev
-    (a fitted scaler) for consistency, not the current-batch stats.
 - **`v1_v2_interaction`** is `V1 * V2`. Interaction terms let linear
   models capture effects that depend on two features jointly (a
   particular combination of PCA components correlating with fraud).
   For a tree model like XGBoost this is partly redundant because trees
   discover interactions implicitly via splits. It's kept because it's
   a common convention and doesn't hurt.
+- **A removed sibling**: this function used to also compute a
+  batch-level `amount_zscore` (Amount standardised against the current
+  batch's mean/stdev). It was dropped because the statistic depended on
+  whatever rows happened to be in the batch — leaking validation rows
+  into training, and impossible to reproduce for a single-row serving
+  request. `amount_log` plus the model's `StandardScaler` carry the
+  same signal without the skew.
 
-### `engineer_features` (`feature_engineering.py:49-54`)
+### `engineer_features` (`feature_engineering.py:51-56`)
 
 The composition pipeline, calls the three transforms in sequence:
 
@@ -254,10 +248,6 @@ function, not the individual transforms.
 - **No time-series targets.** No "is this transaction's country
   different from the last 10 on this card?" because there's no last
   10.
-- **`amount_zscore` is row-batch-dependent.** A real production
-  pipeline would save training-time statistics and apply them at
-  inference, not compute fresh stats per batch. This is a known trade-off
-  the codebase accepts explicitly.
 
 ## The EDA notebook
 
@@ -275,55 +265,75 @@ part of any pipeline. It exists to make two things vivid:
   you can eyeball which features matter most.
 
 Nothing downstream depends on the notebook, it's diagnostic. It's
-committed so a reader can `jupyter lab` into it and see the data
-without re-running the pipeline.
+committed *executed* — with cell outputs in place — so the charts
+render directly on GitHub and a reader sees the plots without needing
+the dataset or a Jupyter kernel at all.
 
 ## The `retrain` DAG
 
-File: `airflow/dags/retrain_dag.py` (165 lines).
+File: `airflow/dags/retrain_dag.py` (149 lines).
 
 ```
 validate_features  >>  train_xgboost  >>  evaluate_and_promote
 ```
 
-Schedule: `@weekly` (`retrain_dag.py:147`), a realistic cadence for
-fraud model refreshes. You can also trigger manually.
+Schedule: manual trigger only (`schedule=None` at `retrain_dag.py:136`).
+This is a demo stack that isn't continuously running, so a cron schedule
+would only accumulate failed runs between sessions. In production you
+would set e.g. `@weekly` — a realistic cadence for fraud model
+refreshes; the schedule is a one-line change, and the interesting part
+(the gated promotion below) is identical either way.
 
-### Task 1, `validate_features` (`retrain_dag.py:44-63`)
+### Task 1, `validate_features` (`retrain_dag.py:53-76`)
 
 Checks `data/processed/features.parquet` exists and has all expected
-columns (V1-V28, `Amount`, `Class`, plus the five engineered features
-defined at `retrain_dag.py:33-41`).
+columns (V1-V28, `Amount`, `Class`, plus the four engineered features
+defined at `retrain_dag.py:43-50`). The column check reads the parquet
+*schema* (`pyarrow.parquet.read_schema`) rather than loading the data
+with `columns=`: passing an expected-column list to `read_parquet`
+would make pandas raise its own error on a missing column before the
+validation could produce a readable one.
 
-### Task 2, `train_xgboost` (`retrain_dag.py:66-86`)
+### Task 2, `train_xgboost` (`retrain_dag.py:79-111`)
 
 Runs `training/train_xgboost.py` as a **subprocess** inside the Airflow
-container. This is a deliberate shortcut with a honest caveat right in
-the docstring (`retrain_dag.py:10-14`):
+container. This works because `./training` is volume-mounted read-only
+at `/opt/airflow/training` (`docker-compose.yml`) and the Airflow image
+installs the training dependencies — scikit-learn, xgboost,
+imbalanced-learn, mlflow, matplotlib, pinned to match
+`training/requirements.txt` (`airflow/Dockerfile`). Torch is deliberately
+excluded: the DAG only retrains XGBoost.
+
+This is a deliberate shortcut with an honest caveat right in the
+docstring (`retrain_dag.py:20-23`):
 
 > In a production deployment you would replace this with a
 > DockerOperator or KubernetesPodOperator pointing at a dedicated
 > training image that has xgboost, torch, and imbalanced-learn
 > installed.
 
-Running training as a subprocess means the Airflow venv needs the
-training dependencies, which puffs up the Airflow image. A real
-production setup would hand the work off to a separate training
-container so Airflow stays a pure orchestrator.
+Running training as a subprocess means the Airflow image carries the
+training dependencies, which puffs it up. A real production setup
+would hand the work off to a separate training container so Airflow
+stays a pure orchestrator.
 
-### Task 3, `evaluate_and_promote` (`retrain_dag.py:89-140`)
+### Task 3, `evaluate_and_promote` (`retrain_dag.py:114-129`)
 
-The interesting part. After training finishes, the new model is
-registered in MLflow but *not* automatically promoted. This task:
+The interesting part. The training script deliberately only *registers*
+a new model version — it never moves the `champion` alias itself (see
+[05 § Registration vs. promotion](05-training.md)). This task is the
+quality gate, and it delegates to **the same function** host-side runs
+use: `promote_champion_if_better` in `training/model_registry.py:43-91`
+(importable thanks to the volume mount). The rule:
 
-1. Finds the just-registered version of `fraud-xgboost`
-   (`retrain_dag.py:103-110`).
-2. Reads its PR-AUC from MLflow (`retrain_dag.py:111-112`).
-3. Reads the *current* champion's PR-AUC (`retrain_dag.py:115-122`).
-4. If the new version's PR-AUC ≥ champion's, promotes to `champion`
-   alias (`retrain_dag.py:130-135`).
-5. Otherwise keeps the existing champion and logs why
-   (`retrain_dag.py:136-140`).
+1. Find the just-registered version of `fraud-xgboost`.
+2. If no champion exists yet, promote unconditionally (first run).
+3. Otherwise promote only if the new version's PR-AUC is at least as
+   good as the current champion's; if not, keep the champion and log why.
+
+One gate, two entry points: `make promote` (called automatically by
+`scripts/run_training.sh`) on the host, and this task inside Airflow.
+The promotion rule can never silently diverge between the two paths.
 
 This is the production-grade pattern: **don't auto-promote without a
 quality gate**. Using the `champion` alias (rather than hardcoding a
@@ -351,8 +361,7 @@ The engineered features appear in three places:
   , read the Parquet from step 1, so they inherit the definition
    transitively.
 3. **`serving/app/models/loader.py`**, re-implements the same
-   transforms on the inference path (the single `amount_zscore = 0`
-   hack lives here).
+   transforms on the inference path for single-row requests.
 
 If you change `feature_engineering.py`, you must also update the
 serving prep function, or training-serving skew silently breaks model
@@ -366,5 +375,4 @@ for why Feast wasn't worth it here.
 - [05, Training](05-training.md) picks up where the DAG leaves off:
   how the Parquet becomes a model registered in MLflow.
 - [06, Serving API](06-serving-api.md) is where the
-  training-serving feature prep lives, look there for the
-  `amount_zscore = 0` quirk in detail.
+  training-serving feature prep lives.

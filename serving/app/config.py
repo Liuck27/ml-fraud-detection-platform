@@ -8,7 +8,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # protected_namespaces: the model_* field names below collide with
+    # Pydantic's reserved "model_" prefix and warn on import without this.
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", protected_namespaces=("settings_",)
+    )
 
     # MLflow
     mlflow_tracking_uri: str = "http://localhost:5000"

@@ -1,11 +1,11 @@
 # =============================================================================
 # ML Fraud Detection Platform — Docker Compose
 #
-# Phase 1: PostgreSQL only (active).
-# Future services are present as commented stubs — uncomment in the phase noted.
+# All six services are active: PostgreSQL, MLflow, Airflow (x3 containers),
+# FastAPI serving, Prometheus, Grafana. Phase comments mark when each was added.
 # =============================================================================
 
-# Shared config block for all three Airflow containers (Phase 3).
+# Shared config block for all three Airflow containers (Phase 2).
 x-airflow-common: &airflow-common
   build:
     context: ./airflow
@@ -15,6 +15,9 @@ x-airflow-common: &airflow-common
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/plugins:/opt/airflow/plugins
     - ./data:/opt/airflow/data
+    # Read-only: the retrain DAG runs training/train_xgboost.py via subprocess
+    # and imports model_registry.py for the champion promotion gate.
+    - ./training:/opt/airflow/training:ro
   depends_on:
     postgres:
       condition: service_healthy
@@ -63,13 +66,25 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Proxied artifacts: clients see mlflow-artifacts:/ URIs and upload/download
+    # over HTTP through this server, which stores files in the volume. Never use
+    # a local path for --default-artifact-root here — clients would interpret it
+    # as a path on THEIR machine and write artifacts outside the stack.
     command: >
       mlflow server
       --backend-store-uri ${MLFLOW_BACKEND_STORE_URI}
-      --default-artifact-root ${MLFLOW_ARTIFACT_ROOT}
       --serve-artifacts
+      --artifacts-destination ${MLFLOW_ARTIFACT_ROOT}
+      --default-artifact-root mlflow-artifacts:/
       --host 0.0.0.0
       --port 5000
+    healthcheck:
+      # The image has no curl; python ships with it. MLflow serves GET /health.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
       - fraud-net
 
@@ -102,72 +117,8 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
-  # ── Zookeeper ───────────────────────────────────────────────────────────────
-  # Uncomment in Phase 8.
-  # zookeeper:
-  #   image: confluentinc/cp-zookeeper:${CONFLUENT_VERSION:-7.5.0}
-  #   container_name: fraud_zookeeper
-  #   restart: unless-stopped
-  #   environment:
-  #     ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_CLIENT_PORT:-2181}
-  #     ZOOKEEPER_TICK_TIME: ${ZOOKEEPER_TICK_TIME:-2000}
-  #   networks:
-  #     - fraud-net
-
-  # ── Kafka ────────────────────────────────────────────────────────────────────
-  # Uncomment in Phase 8.
-  # kafka:
-  #   image: confluentinc/cp-kafka:${CONFLUENT_VERSION:-7.5.0}
-  #   container_name: fraud_kafka
-  #   restart: unless-stopped
-  #   depends_on:
-  #     - zookeeper
-  #   ports:
-  #     - "9092:9092"
-  #   environment:
-  #     KAFKA_BROKER_ID: 1
-  #     KAFKA_ZOOKEEPER_CONNECT: zookeeper:${ZOOKEEPER_CLIENT_PORT:-2181}
-  #     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-  #     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-  #     KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-  #   networks:
-  #     - fraud-net
-
-  # ── Kafka Producer ───────────────────────────────────────────────────────────
-  # Uncomment in Phase 8.
-  # kafka-producer:
-  #   build:
-  #     context: ./streaming/producer
-  #     dockerfile: Dockerfile
-  #   container_name: fraud_kafka_producer
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   volumes:
-  #     - ./data:/app/data
-  #   depends_on:
-  #     - kafka
-  #   networks:
-  #     - fraud-net
-
-  # ── Go Consumer ──────────────────────────────────────────────────────────────
-  # Uncomment in Phase 8.
-  # go-consumer:
-  #   build:
-  #     context: ./streaming/consumer
-  #     dockerfile: Dockerfile
-  #   container_name: fraud_go_consumer
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   ports:
-  #     - "${GO_CONSUMER_HEALTH_PORT:-8081}:8081"
-  #   depends_on:
-  #     - kafka
-  #     - serving
-  #   networks:
-  #     - fraud-net
-
   # ── FastAPI Serving ──────────────────────────────────────────────────────────
+  # Phase 4: real-time inference + A/B testing + SHAP.
   serving:
     build:
       context: ./serving
@@ -183,7 +134,16 @@ services:
       postgres:
         condition: service_healthy
       mlflow:
-        condition: service_started
+        condition: service_healthy  # models are loaded at startup, so MLflow must be ready
+    healthcheck:
+      # GET /health always returns 200; the JSON status field says whether the
+      # models actually loaded. A fresh stack with no trained models shows
+      # "unhealthy" here — that is accurate, not a bug (train, then restart).
+      test: ["CMD", "python", "-c", "import json,sys,urllib.request; r=json.load(urllib.request.urlopen('http://localhost:8000/health', timeout=3)); sys.exit(0 if r['status'] == 'healthy' else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     networks:
       - fraud-net
 

@@ -146,15 +146,19 @@ check: format-check lint typecheck test ## Run all checks — equivalent to CI
 # ── Training ───────────────────────────────────────────────────────────────
 
 .PHONY: train-xgboost
-train-xgboost: ## Train XGBoost classifier and register as champion in MLflow
+train-xgboost: ## Train XGBoost and register a new version in MLflow (no promotion)
 	$(PYTHON_TRAINING) training/train_xgboost.py
 
 .PHONY: train-autoencoder
 train-autoencoder: ## Train Autoencoder and register as challenger in MLflow
 	$(PYTHON_TRAINING) training/train_autoencoder.py
 
+.PHONY: promote
+promote: ## Promote latest XGBoost version to champion IF its PR-AUC beats the current champion
+	$(PYTHON_TRAINING) scripts/promote_model.py
+
 .PHONY: train
-train: train-xgboost train-autoencoder ## Train both models (XGBoost + Autoencoder)
+train: train-xgboost train-autoencoder promote ## Train both models, then apply gated champion promotion
 
 # ── Data ───────────────────────────────────────────────────────────────────────
 

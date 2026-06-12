@@ -2,9 +2,12 @@ groups:
   - name: fraud_detection
     rules:
       - alert: HighFraudRate
+        # sum() on both sides is required: PromQL binary ops match series
+        # label-for-label, so without it each {model, prediction="fraud"}
+        # series would be divided by itself and the ratio would always be 1.
         expr: |
-          rate(inference_total{prediction="fraud"}[5m])
-          / rate(inference_total[5m]) > 0.10
+          sum(rate(inference_total{prediction="fraud"}[5m]))
+          / sum(rate(inference_total[5m])) > 0.10
         for: 2m
         labels:
           severity: warning

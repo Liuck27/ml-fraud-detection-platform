@@ -56,9 +56,9 @@ reg = MagicMock()
 
 The key insight: **mock everything that calls MLflow, keep the
 feature-engineering code real**. If we mocked `prepare_features` too,
-we'd lose coverage of the single most subtle piece of serving code
-(the `amount_zscore = 0` logic, the `hour_of_day // 3600 % 24`
-formula). By using the real transform, the tests protect against
+we'd lose coverage of the most subtle piece of serving code
+(the `hour_of_day // 3600 % 24` formula, the `is_night` boundary
+logic). By using the real transform, the tests protect against
 accidental changes to feature logic.
 
 Mocked pieces:
@@ -155,8 +155,7 @@ project logic.
 
 ## Integration tests, `tests/integration/`
 
-Three tests in `test_pipeline_e2e.py`, plus a Kafka placeholder
-(`test_kafka_flow.py` is a one-line stub for a future Phase 11).
+Three tests in `test_pipeline_e2e.py`.
 
 ### The reachability pattern, `conftest.py:22-28`
 
@@ -242,33 +241,37 @@ Both are pinned to specific versions so CI can't break because of a
 tool-side release. If you bump the version in `requirements-dev.txt`,
 also bump it here.
 
-### Job 2, `typecheck` (`ci.yml:35-63`)
+### Job 2, `typecheck` (`ci.yml:35-61`)
 
-Two mypy passes: one on `serving/app/`, one on `training/`.
+Two mypy passes: one on `serving/app/`, one on `training/`. Both are
+blocking — a mypy failure fails the build, matching what
+`make typecheck` does locally.
 
-**`continue-on-error: true`** (line 39) is the important detail. mypy
-failures don't block the CI green check.
+This job originally ran with `continue-on-error: true`, on the worry
+that partial third-party stubs (torch, MLflow, XGBoost) would break
+CI on upstream churn rather than on real bugs. In practice the job
+was green on every recorded run, so the escape hatch was masking
+nothing — it only made "mypy is enforced in CI" untrue. And since
+mypy and every library are version-pinned, stub churn can only
+arrive through a deliberate version bump, which is exactly when you
+want the gate to speak up.
 
-Why? Training imports `torch` and `sklearn` whose stubs are partial
-or aggressive, and some third-party imports (MLflow, XGBoost) have
-stubs that change across versions. Treating mypy as a warning rather
-than a gate keeps CI green on upstream stub churn while still
-surfacing real issues in the job logs.
-
-When the code stabilises, flip this to `false` and take the signal
-seriously. For now it's a tradeoff: signal-rich but not gating.
-
-### Job 3, `test` (`ci.yml:65-91`)
+### Job 3, `test` (`ci.yml:63-96`)
 
 - **`needs: lint`**, only runs if lint passed. No point running tests
   on code that won't merge.
-- **Only serving tests.** `pytest serving/tests/ -v --tb=short
-  --cov=serving --cov-report=term-missing` (line 91).
-- **Why not training tests in CI?** Training tests need the training
-  venv (torch, xgboost, imblearn), which is ~1.5 GB to install.
-  That's ~5-10 minutes per CI run. Training logic is numerics-only
-  and stable; running those tests locally via `make test` is
-  sufficient. Move them into CI later if training changes pick up.
+- **Both unit suites.** Training tests first (`pytest
+  training/tests/`, line 90), then serving tests with coverage
+  (`pytest serving/tests/ -v --tb=short --cov=serving
+  --cov-report=term-missing`, line 96).
+- **Training tests are cheap, despite appearances.**
+  `test_evaluate.py` exercises pure-numpy metric code; its imports
+  are numpy and scikit-learn (already installed via
+  `serving/requirements.txt`) plus matplotlib. Adding the suite to
+  CI cost one `pip install matplotlib`, not a second multi-GB
+  environment. The job was originally serving-only on the assumption
+  that the full training venv (torch, imblearn) was required —
+  reading the test's actual imports showed otherwise.
 - **Coverage.** Printed to stdout but not enforced (no
   `--cov-fail-under`). Useful for eyeballing regressions. Adding a
   `--cov-fail-under=80` flag would make coverage a gate.
@@ -300,7 +303,7 @@ whole stack, not a per-commit check.
 ## Limitations
 
 - **No coverage floor.** Coverage is reported but not enforced.
-  Setting `--cov-fail-under=80` in `ci.yml:91` would make regressions
+  Setting `--cov-fail-under=80` in `ci.yml:96` would make regressions
   impossible to merge.
 - **No security scanner.** `pip-audit` exists as a Makefile target
   (`make audit`) but isn't wired to CI. A `pip-audit` job on the
@@ -317,9 +320,6 @@ whole stack, not a per-commit check.
 - **No performance regression tests.** A 100ms regression on p99
   latency wouldn't fail CI. Adding a simple `pytest-benchmark` check
   on the `prepare_features` function would be quick wins.
-- **Kafka integration test is a stub.** `tests/integration/test_kafka_flow.py`
-  is one comment line, the pattern is there for a future Phase 11,
-  which is deliberately out of scope.
 
 ## Where to go next
 

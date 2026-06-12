@@ -55,21 +55,33 @@ def find_optimal_threshold(
     cost_fn > cost_fp reflects the asymmetry in fraud detection: a missed
     fraud (FN) costs more than a false alarm (FP).  Default ratio is 10:1.
     """
+    y_pred_proba = np.asarray(y_pred_proba)
     _, _, thresholds = precision_recall_curve(y_true, y_pred_proba)
+    if thresholds.size == 0:
+        return 0.5
 
-    best_threshold = 0.5
-    best_cost = float("inf")
+    # Vectorised sweep: sort scores descending once, then cumulative sums
+    # give the TP/FP counts at every candidate threshold. The naive version
+    # re-thresholds the full array per candidate — O(n * k) on ~57k rows.
+    order = np.argsort(y_pred_proba)[::-1]
+    y_sorted = np.asarray(y_true)[order].astype(np.int64)
+    scores_desc = y_pred_proba[order]
 
-    for t in thresholds:
-        y_pred = (y_pred_proba >= t).astype(int)
-        fp = int(((y_pred == 1) & (y_true == 0)).sum())
-        fn = int(((y_pred == 0) & (y_true == 1)).sum())
-        cost = cost_fp * fp + cost_fn * fn
-        if cost < best_cost:
-            best_cost = cost
-            best_threshold = float(t)
+    tps = np.cumsum(y_sorted)
+    fps = np.cumsum(1 - y_sorted)
 
-    return best_threshold
+    # For each threshold t, predictions are (score >= t); the index of the
+    # last qualifying sample in the descending sort gives its TP/FP counts.
+    count_ge = scores_desc.size - np.searchsorted(
+        scores_desc[::-1], thresholds, side="left"
+    )
+    last_idx = count_ge - 1
+    fns = tps[-1] - tps[last_idx]
+    costs = cost_fp * fps[last_idx] + cost_fn * fns
+
+    # argmin takes the first minimum; thresholds are ascending, so ties
+    # resolve to the lowest threshold — same behaviour as the loop version.
+    return float(thresholds[int(np.argmin(costs))])
 
 
 def plot_roc_curve(

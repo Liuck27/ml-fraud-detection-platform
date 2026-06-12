@@ -96,14 +96,14 @@ alerts are best seen live in the Prometheus UI at this scale.
 ## Alert rules, `monitoring/alerting/rules.yml`
 
 Three alerts, all under one group `fraud_detection`. Read
-`rules.yml:4-33`.
+`rules.yml:4-36`.
 
-### `HighFraudRate`, `rules.yml:4-13`
+### `HighFraudRate`, `rules.yml:4-16`
 
 ```yaml
 expr: |
-  rate(inference_total{prediction="fraud"}[5m])
-  / rate(inference_total[5m]) > 0.10
+  sum(rate(inference_total{prediction="fraud"}[5m]))
+  / sum(rate(inference_total[5m])) > 0.10
 for: 2m
 severity: warning
 ```
@@ -111,6 +111,16 @@ severity: warning
 - **What it means.** Over the last 5 minutes, more than 10% of
   predictions came back as fraud, and this has been true continuously
   for at least 2 minutes.
+- **Why the `sum()` wrappers are load-bearing.** PromQL binary
+  operations match series label-for-label. Without `sum()`, the left
+  side's `{model_name=..., prediction="fraud"}` series would be divided
+  by the *identical* series on the right (the right side contains both
+  `fraud` and `legit` series, and matching picks the one with equal
+  labels), so the ratio would always be exactly 1 and the alert would
+  fire whenever any fraud prediction occurred. `sum()` collapses both
+  sides to single scalar-like series, making it a true fraud share of
+  all traffic. This is a classic PromQL ratio pitfall; the alternative
+  is `ignoring(prediction)` with `sum by` if you want a per-model rate.
 - **Why 10%.** The real-world baseline from the training set is
   0.17%. Even with classifier miscalibration, a healthy system runs
   at a few percent. 10% is the "definitely something's wrong" line,
@@ -124,7 +134,7 @@ severity: warning
   real rate. 10% works here because synthetic test traffic
   would never cross it accidentally.
 
-### `HighInferenceLatency`, `rules.yml:15-24`
+### `HighInferenceLatency`, `rules.yml:18-27`
 
 ```yaml
 expr: histogram_quantile(0.99, rate(inference_latency_seconds_bucket[5m])) > 0.5
@@ -148,7 +158,7 @@ severity: warning
   be p99 = 700ms or p99 = 990ms, you can't tell. If you wanted finer
   detail at the tail, you'd add buckets at 700ms, 850ms, 1500ms, 3s.
 
-### `InferenceErrorSpike`, `rules.yml:26-33`
+### `InferenceErrorSpike`, `rules.yml:29-36`
 
 ```yaml
 expr: rate(inference_errors_total[5m]) > 0.1

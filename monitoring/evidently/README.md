@@ -1,18 +1,21 @@
 # Evidently
 
-Data and prediction drift detection for the fraud detection platform.
-Generates HTML reports and exports drift metrics to Prometheus.
+Data drift detection for the fraud detection platform. This directory
+holds the isolated venv and requirements for Evidently; the report
+script itself lives at `scripts/drift_report.py`.
 
-## Local Dev
+## Usage
 
 ```bash
 # From project root
 make venv-evidently
 
-# Run drift report (Phase 9 — requires serving data)
-monitoring/evidently/.venv/Scripts/python monitoring/evidently/drift_report.py
+# Generate synthetic "current" data with injected drift, then the HTML report
+make generate-drift-data
+make drift-report
+# Output: data/reports/drift_report.html
 ```
 
-## Configuration (via .env)
-- `EVIDENTLY_REFERENCE_DATA_PATH` — path to training reference dataset
-- `EVIDENTLY_REPORTS_PATH` — output directory for HTML reports
+## Configuration (via .env, both optional)
+- `EVIDENTLY_REFERENCE_DATA_PATH` — training reference parquet (default: `data/processed/features.parquet`)
+- `EVIDENTLY_REPORTS_PATH` — output directory (default: `data/reports`)

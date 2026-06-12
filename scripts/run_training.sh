@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run both training scripts in order.  Exits immediately on any error.
+# Run both training scripts, then apply the gated champion promotion.
+# Exits immediately on any error.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,6 +19,10 @@ echo "==> Training XGBoost classifier…"
 echo ""
 echo "==> Training Autoencoder…"
 "${PYTHON}" "${REPO_ROOT}/training/train_autoencoder.py"
+
+echo ""
+echo "==> Applying gated champion promotion (only if PR-AUC improved)…"
+"${PYTHON}" "${REPO_ROOT}/scripts/promote_model.py"
 
 echo ""
 echo "==> Training complete."
